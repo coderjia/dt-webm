@@ -55,7 +55,19 @@ EOF
 download_and_install_main() {
   title "下载并安装主程序"
   tmp_file="$(mktemp /tmp/dt-webm.XXXXXX)"
-  curl -fsSL "${MAIN_SCRIPT_URL}" -o "${tmp_file}"
+  info "正在连接 GitHub Raw：${MAIN_SCRIPT_URL}"
+  info "下载参数：连接超时 8 秒，最大耗时 60 秒，失败自动重试 3 次。"
+  if ! curl -fSL \
+    --connect-timeout 8 \
+    --max-time 60 \
+    --retry 3 \
+    --retry-delay 2 \
+    --retry-connrefused \
+    "${MAIN_SCRIPT_URL}" -o "${tmp_file}"; then
+    warn "下载失败，请检查网络连通性或稍后重试。"
+    warn "可手工验证：curl -I ${MAIN_SCRIPT_URL}"
+    exit 1
+  fi
   if [ ! -s "${tmp_file}" ]; then
     warn "主程序下载失败：${MAIN_SCRIPT_URL}"
     exit 1
@@ -126,7 +138,12 @@ ask_custom_ports() {
   title "端口配置"
   info "默认建议放行端口为：22,80,443"
   info "如需增加自定义端口，请输入（逗号分隔，如 8443,28866），直接回车则跳过。"
-  read -r custom_ports
+  if [ -r /dev/tty ]; then
+    read -r custom_ports < /dev/tty
+  else
+    warn "当前会话不可交互（无 /dev/tty），已跳过自定义端口输入。"
+    return
+  fi
   if [ -z "${custom_ports}" ]; then
     ok "已跳过自定义端口配置，保持默认端口。"
     return
