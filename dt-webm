@@ -267,7 +267,7 @@ discover_log_dir() {
 
 list_log_files() {
   log_dir="$1"
-  ls -1 "${log_dir}"/*.log "${log_dir}"/*access*.log 2>/dev/null || true
+  ls -1 "${log_dir}"/*.log "${log_dir}"/*access*.log 2>/dev/null | awk '!seen[$0]++' || true
 }
 
 select_log_file() {
@@ -277,15 +277,34 @@ select_log_file() {
     warn "未找到日志文件，请检查目录：${log_dir}"
     exit 1
   fi
-  echo "${files}" | nl -w2 -s'. '
-  echo "请选择日志文件序号："
-  read -r idx
+  if [ -r /dev/tty ]; then
+    echo "${files}" | nl -w2 -s'. ' > /dev/tty
+    echo "请选择日志文件序号：" > /dev/tty
+    read -r idx < /dev/tty
+  else
+    # 兜底：非交互环境使用标准输入
+    echo "${files}" | nl -w2 -s'. '
+    echo "请选择日志文件序号："
+    read -r idx
+  fi
   selected="$(echo "${files}" | sed -n "${idx}p")"
   if [ -z "${selected}" ]; then
     warn "选择无效。"
     exit 1
   fi
   echo "${selected}"
+}
+
+build_goaccess_lang_opt() {
+  if goaccess --help 2>/dev/null | grep -q -- '--language'; then
+    echo "--language=zh_CN"
+    return
+  fi
+  if goaccess --help 2>/dev/null | grep -q -- '--lang'; then
+    echo "--lang=zh_CN"
+    return
+  fi
+  echo ""
 }
 
 slice_log_by_time() {
@@ -377,7 +396,8 @@ goaccess_report() {
     return
   fi
 
-  log_dir="$(discover_log_dir)"
+  # discover_log_dir 可能输出提示信息，取最后一行作为真实路径
+  log_dir="$(discover_log_dir | awk 'END{print}')"
   log_file="$(select_log_file "${log_dir}")"
 
   title "选择时间切片"
@@ -397,13 +417,17 @@ goaccess_report() {
   esac
 
   out_html="/tmp/goaccess-report-$(date +%Y%m%d%H%M%S).html"
+  lang_opt="$(build_goaccess_lang_opt)"
+  if [ -z "${lang_opt}" ]; then
+    info "当前 GoAccess 版本不支持中文语言参数，将使用默认语言生成报告。"
+  fi
   slice_log_by_time "${mode}" "${log_file}" | goaccess - \
     --log-format=COMBINED \
     --date-format=%d/%b/%Y \
     --time-format=%H:%M:%S \
     --real-time-html \
     --output="${out_html}" \
-    --language=zh_CN
+    ${lang_opt}
   if [ $? -eq 0 ]; then
     ok "报告生成成功：${out_html}"
   else
