@@ -60,7 +60,7 @@ WEBHOOK_URL=""
 # GeoIP 数据库下载地址（支持 DB-IP 或 MaxMind 链接）
 GEOIP_URL=""
 # 防火墙建议放行端口（逗号分隔）
-ALLOW_PORTS="22,80,443,28866"
+ALLOW_PORTS="22,80,443"
 EOF
   fi
 }
@@ -85,7 +85,7 @@ save_kv() {
 ensure_default_config_values() {
   # 兼容老版本 config.conf 缺少关键键值
   if ! grep -q '^ALLOW_PORTS=' "${CONFIG_FILE}" 2>/dev/null; then
-    echo 'ALLOW_PORTS="22,80,443,28866"' >> "${CONFIG_FILE}"
+    echo 'ALLOW_PORTS="22,80,443"' >> "${CONFIG_FILE}"
   fi
 }
 
@@ -232,7 +232,7 @@ prompt_install_dependencies() {
   install_crowdsec
 
   load_config
-  ports="${ALLOW_PORTS:-22,80,443,28866}"
+  ports="${ALLOW_PORTS:-22,80,443}"
   info "防火墙端口提醒：请确保已放行 ${ports} 端口。"
   whitelist_self_ip
 }
@@ -549,10 +549,10 @@ normalize_ports() {
 
 configure_allow_ports() {
   load_config
-  current="${ALLOW_PORTS:-22,80,443,28866}"
+  current="${ALLOW_PORTS:-22,80,443}"
   title "端口白名单配置"
   echo "当前建议放行端口：${current}"
-  echo "请输入新的端口列表（逗号分隔，例如 22,80,443,28866）："
+  echo "请输入新的端口列表（逗号分隔，例如 22,80,443,8443）："
   read -r input_ports
   normalized="$(normalize_ports "${input_ports}" || true)"
   if [ -z "${normalized}" ]; then
@@ -708,7 +708,7 @@ do_install_cmd() {
   setup_alert_push_cron
 
   load_config
-  ports="${ALLOW_PORTS:-22,80,443,28866}"
+  ports="${ALLOW_PORTS:-22,80,443}"
   info "请确认防火墙已放行端口：${ports}。"
 }
 

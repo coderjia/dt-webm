@@ -18,9 +18,10 @@
   - 提供一键逐步安装（含 CrowdSec 仓库、核心组件、`nftables` bouncer）
 - **全局命令注册**
   - `install` 指令可自动软链接到 `/usr/local/bin/dt-webm`
+  - 提供独立 `install.sh` 一键安装脚本
 - **安全保护**
   - 自动探测当前 SSH 登录 IP，写入 CrowdSec 白名单（防误封）
-  - 默认防火墙建议放行端口：`22,80,443,28866`
+  - 默认防火墙建议放行端口：`22,80,443`
   - 支持自定义端口白名单（持久化配置）
   - 使用 `setfacl` 赋予 `crowdsec` 用户日志目录 `rx` 权限，不破坏原有 `chmod`
 - **日志路径智能发现**
@@ -45,7 +46,8 @@
 
 ## 目录结构
 
-- `dt-webm`：主脚本
+- `dt-webm`：主脚本（本地开发）
+- `install.sh`：独立一键安装脚本
 - `README.md`：项目说明文档
 
 ---
@@ -54,12 +56,29 @@
 
 > 建议在 Linux 服务器（root 或 sudo）下执行。
 
+### 方式一：一键安装（推荐）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/coderjia/dt-webm/main/install.sh | sudo bash
+```
+
+安装器会自动完成：
+
+- root 与 `curl` 环境检查
+- 下载仓库 `dt-webm.sh` 到临时目录并安装到 `/usr/local/bin/dt-webm`
+- 自动检测 `/usr/local/bin` 是否在 PATH 中（不在则写入 `/etc/profile.d/dt-webm-path.sh`）
+- 初始化 `/etc/dt-webm/config.conf`
+- 自动探测 SSH IP 写入 CrowdSec 白名单（若 `cscli` 可用）
+- 交互输入自定义端口（逗号分隔，回车跳过）
+
+### 方式二：本地脚本运行
+
 ```bash
 chmod +x ./dt-webm
 sudo ./dt-webm install
 ```
 
-安装完成后，可全局调用：
+安装完成后，全局调用：
 
 ```bash
 dt-webm
@@ -81,7 +100,7 @@ LOG_DIR=""
 WEBHOOK_TYPE=""
 WEBHOOK_URL=""
 GEOIP_URL=""
-ALLOW_PORTS="22,80,443,28866"
+ALLOW_PORTS="22,80,443"
 ```
 
 ---
