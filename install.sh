@@ -84,10 +84,15 @@ init_config_file() {
   if [ ! -f "${CONFIG_FILE}" ]; then
     cat > "${CONFIG_FILE}" <<'EOF'
 # dt-webm 配置文件
+# Web 日志目录（自动发现失败时可手工配置）
 LOG_DIR=""
+# Webhook 类型：dingtalk / feishu / telegram
 WEBHOOK_TYPE=""
+# Webhook URL（钉钉/飞书/Telegram Bot API）
 WEBHOOK_URL=""
+# GeoIP 数据库下载地址（DB-IP 或 MaxMind 直链）
 GEOIP_URL=""
+# 防火墙建议放行端口（逗号分隔）
 ALLOW_PORTS="22,80,443"
 EOF
     ok "已创建默认配置：${CONFIG_FILE}"
