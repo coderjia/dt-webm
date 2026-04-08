@@ -1,0 +1,770 @@
+#!/usr/bin/env bash
+set -e
+
+# =========================
+# dt-webm: GoAccess + CrowdSec
+# =========================
+
+SCRIPT_NAME="dt-webm"
+CONFIG_DIR="/etc/dt-webm"
+CONFIG_FILE="${CONFIG_DIR}/config.conf"
+WEBHOOK_SCRIPT="/usr/local/bin/dt-webm-webhook.sh"
+CRON_GEOIP_MARK="# dt-webm-geoip-update"
+CRON_ALERT_MARK="# dt-webm-alert-push"
+
+COLOR_RED='\033[0;31m'
+COLOR_GREEN='\033[0;32m'
+COLOR_BLUE='\033[0;34m'
+COLOR_YELLOW='\033[1;33m'
+COLOR_RESET='\033[0m'
+
+title() { echo -e "${COLOR_BLUE}==== $* ====${COLOR_RESET}"; }
+ok() { echo -e "${COLOR_GREEN}[成功]${COLOR_RESET} $*"; }
+warn() { echo -e "${COLOR_RED}[警告]${COLOR_RESET} $*"; }
+info() { echo -e "${COLOR_YELLOW}[提示]${COLOR_RESET} $*"; }
+
+require_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    warn "此操作需要 root 权限，请使用 sudo 或 root 用户执行。"
+    exit 1
+  fi
+}
+
+detect_pkg_mgr() {
+  if command -v apt >/dev/null 2>&1; then
+    PKG_MGR="apt"
+    OS_FAMILY="debian"
+  elif command -v dnf >/dev/null 2>&1; then
+    PKG_MGR="dnf"
+    OS_FAMILY="rhel"
+  elif command -v yum >/dev/null 2>&1; then
+    PKG_MGR="yum"
+    OS_FAMILY="rhel"
+  else
+    warn "未检测到支持的包管理器（apt/dnf/yum）。"
+    exit 1
+  fi
+}
+
+ensure_config() {
+  mkdir -p "${CONFIG_DIR}"
+  if [ ! -f "${CONFIG_FILE}" ]; then
+    cat > "${CONFIG_FILE}" <<'EOF'
+# dt-webm 配置文件
+# Web 日志目录（自动发现失败时可手工配置）
+LOG_DIR=""
+# Webhook 类型：dingtalk / feishu / telegram
+WEBHOOK_TYPE=""
+# Webhook URL
+WEBHOOK_URL=""
+# GeoIP 数据库下载地址（支持 DB-IP 或 MaxMind 链接）
+GEOIP_URL=""
+# 防火墙建议放行端口（逗号分隔）
+ALLOW_PORTS="22,80,443,28866"
+EOF
+  fi
+}
+
+load_config() {
+  ensure_config
+  # shellcheck disable=SC1090
+  . "${CONFIG_FILE}" || true
+}
+
+save_kv() {
+  key="$1"
+  val="$2"
+  ensure_config
+  if grep -q "^${key}=" "${CONFIG_FILE}" 2>/dev/null; then
+    sed -i "s|^${key}=.*|${key}=\"${val}\"|g" "${CONFIG_FILE}"
+  else
+    echo "${key}=\"${val}\"" >> "${CONFIG_FILE}"
+  fi
+}
+
+ensure_default_config_values() {
+  # 兼容老版本 config.conf 缺少关键键值
+  if ! grep -q '^ALLOW_PORTS=' "${CONFIG_FILE}" 2>/dev/null; then
+    echo 'ALLOW_PORTS="22,80,443,28866"' >> "${CONFIG_FILE}"
+  fi
+}
+
+check_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+get_ssh_ip() {
+  ip_from_conn="$(echo "${SSH_CONNECTION:-}" | awk '{print $1}')"
+  if [ -n "${ip_from_conn}" ]; then
+    echo "${ip_from_conn}"
+    return
+  fi
+  who_ip="$(who | awk 'NR==1{gsub(/[()]/,"",$5);print $5}')"
+  echo "${who_ip:-}"
+}
+
+whitelist_self_ip() {
+  ssh_ip="$(get_ssh_ip)"
+  if [ -z "${ssh_ip}" ]; then
+    info "未检测到当前 SSH 登录 IP，跳过自杀保护白名单。"
+    return
+  fi
+
+  if ! check_cmd cscli; then
+    warn "未检测到 cscli，无法写入 CrowdSec 白名单。"
+    return
+  fi
+
+  title "写入自杀保护白名单"
+  if cscli parsers add crowdsecurity/whitelists >/dev/null 2>&1 || true; then
+    :
+  fi
+
+  mkdir -p /etc/crowdsec/parsers/s02-enrich/
+  wl_file="/etc/crowdsec/parsers/s02-enrich/dt-webm-whitelist.yaml"
+  cat > "${wl_file}" <<EOF
+name: dt-webm/self-whitelist
+description: "dt-webm 自动白名单"
+whitelist:
+  reason: "当前 SSH 登录 IP 防误封"
+  ip:
+    - "${ssh_ip}"
+EOF
+  if [ $? -eq 0 ]; then
+    ok "已将 ${ssh_ip} 写入 CrowdSec 白名单配置。"
+    systemctl restart crowdsec >/dev/null 2>&1 || true
+  else
+    warn "白名单写入失败。"
+  fi
+}
+
+set_log_acl() {
+  log_dir="$1"
+  if [ -z "${log_dir}" ] || [ ! -d "${log_dir}" ]; then
+    warn "日志目录不存在，跳过 ACL 配置。"
+    return
+  fi
+  if ! check_cmd setfacl; then
+    info "未检测到 setfacl，尝试安装 acl。"
+    if [ "${PKG_MGR}" = "apt" ]; then
+      apt update && apt install -y acl
+    else
+      ${PKG_MGR} install -y acl
+    fi
+  fi
+  setfacl -R -m u:crowdsec:rx "${log_dir}" || true
+  setfacl -R -d -m u:crowdsec:rx "${log_dir}" || true
+  if [ $? -eq 0 ]; then
+    ok "已为 crowdsec 用户配置日志目录 ACL: ${log_dir}"
+  fi
+}
+
+install_goaccess() {
+  title "安装 GoAccess"
+  if check_cmd goaccess; then
+    ok "GoAccess 已安装。"
+    return
+  fi
+  if [ "${PKG_MGR}" = "apt" ]; then
+    apt update
+    apt install -y goaccess jq curl cron
+  else
+    ${PKG_MGR} install -y epel-release || true
+    ${PKG_MGR} install -y goaccess jq curl cronie
+  fi
+  if check_cmd goaccess; then
+    ok "GoAccess 安装完成。"
+  else
+    warn "GoAccess 安装失败，请检查仓库配置。"
+  fi
+}
+
+install_crowdsec() {
+  title "安装 CrowdSec 及 nftables Bouncer"
+  if check_cmd cscli; then
+    ok "CrowdSec 已安装。"
+    return
+  fi
+
+  if [ "${PKG_MGR}" = "apt" ]; then
+    apt update
+    apt install -y curl gnupg lsb-release apt-transport-https
+    curl -fsSL https://packagecloud.io/crowdsec/crowdsec/gpgkey | gpg --dearmor -o /usr/share/keyrings/crowdsec-archive-keyring.gpg
+    echo "deb [signed-by=/usr/share/keyrings/crowdsec-archive-keyring.gpg] https://packagecloud.io/crowdsec/crowdsec/ubuntu/ $(lsb_release -cs) main" > /etc/apt/sources.list.d/crowdsec.list
+    apt update
+    apt install -y crowdsec crowdsec-firewall-bouncer-nftables nftables
+  else
+    curl -s https://packagecloud.io/install/repositories/crowdsec/crowdsec/script.rpm.sh | bash
+    ${PKG_MGR} install -y crowdsec crowdsec-firewall-bouncer-nftables nftables
+  fi
+
+  systemctl enable --now crowdsec >/dev/null 2>&1 || true
+  systemctl enable --now crowdsec-firewall-bouncer >/dev/null 2>&1 || true
+
+  if check_cmd cscli; then
+    ok "CrowdSec 安装完成。"
+  else
+    warn "CrowdSec 安装失败，请手动排查。"
+  fi
+}
+
+prompt_install_dependencies() {
+  missing=""
+  check_cmd goaccess || missing="${missing} goaccess"
+  check_cmd cscli || missing="${missing} crowdsec"
+
+  if [ -z "${missing}" ]; then
+    ok "依赖检查通过。"
+    return
+  fi
+
+  warn "发现缺失依赖:${missing}"
+  info "是否执行一键逐步安装？(y/n)"
+  read -r ans
+  if [ "${ans}" != "y" ]; then
+    warn "用户取消安装，部分功能不可用。"
+    return
+  fi
+
+  require_root
+  detect_pkg_mgr
+  install_goaccess
+  install_crowdsec
+
+  load_config
+  ports="${ALLOW_PORTS:-22,80,443,28866}"
+  info "防火墙端口提醒：请确保已放行 ${ports} 端口。"
+  whitelist_self_ip
+}
+
+discover_log_dir() {
+  load_config
+  if [ -n "${LOG_DIR:-}" ] && [ -d "${LOG_DIR}" ]; then
+    echo "${LOG_DIR}"
+    return
+  fi
+
+  for d in /var/log/nginx /var/log/httpd; do
+    if [ -d "${d}" ]; then
+      save_kv "LOG_DIR" "${d}"
+      ok "自动发现日志目录：${d}"
+      echo "${d}"
+      return
+    fi
+  done
+
+  warn "未自动发现日志目录。"
+  echo "请输入日志目录（例如 /var/log/nginx）："
+  read -r user_dir
+  if [ ! -d "${user_dir}" ]; then
+    warn "目录不存在：${user_dir}"
+    exit 1
+  fi
+  save_kv "LOG_DIR" "${user_dir}"
+  ok "已保存日志目录：${user_dir}"
+  echo "${user_dir}"
+}
+
+list_log_files() {
+  log_dir="$1"
+  ls -1 "${log_dir}"/*.log "${log_dir}"/*access*.log 2>/dev/null || true
+}
+
+select_log_file() {
+  log_dir="$1"
+  files="$(list_log_files "${log_dir}")"
+  if [ -z "${files}" ]; then
+    warn "未找到日志文件，请检查目录：${log_dir}"
+    exit 1
+  fi
+  echo "${files}" | nl -w2 -s'. '
+  echo "请选择日志文件序号："
+  read -r idx
+  selected="$(echo "${files}" | sed -n "${idx}p")"
+  if [ -z "${selected}" ]; then
+    warn "选择无效。"
+    exit 1
+  fi
+  echo "${selected}"
+}
+
+slice_log_by_time() {
+  mode="$1"
+  log_file="$2"
+
+  # 将快捷时间选项统一换算为 epoch 区间，避免字符串比较导致误判
+  now_epoch="$(date +%s)"
+  start_epoch=""
+  end_epoch=""
+
+  if [ "${mode}" = "1h" ]; then
+    start_epoch="$((now_epoch - 3600))"
+    end_epoch="${now_epoch}"
+  fi
+
+  if [ "${mode}" = "today" ]; then
+    today_start="$(date -d 'today 00:00:00' +%s 2>/dev/null || date -v0H -v0M -v0S +%s)"
+    start_epoch="${today_start}"
+    end_epoch="${now_epoch}"
+  fi
+
+  if [ "${mode}" = "yesterday" ]; then
+    y_start="$(date -d 'yesterday 00:00:00' +%s 2>/dev/null || date -v-1d -v0H -v0M -v0S +%s)"
+    y_end="$((y_start + 86400 - 1))"
+    start_epoch="${y_start}"
+    end_epoch="${y_end}"
+  fi
+
+  # custom: 20260401_000000-20260403_120000
+  if [ -z "${start_epoch}" ] || [ -z "${end_epoch}" ]; then
+    if ! echo "${mode}" | grep -Eq '^[0-9]{8}_[0-9]{6}-[0-9]{8}_[0-9]{6}$'; then
+      warn "时间范围格式错误，应为：20260401_000000-20260403_120000"
+      exit 1
+    fi
+    start_raw="${mode%-*}"
+    end_raw="${mode#*-}"
+    start_epoch="$(date -d "${start_raw:0:4}-${start_raw:4:2}-${start_raw:6:2} ${start_raw:9:2}:${start_raw:11:2}:${start_raw:13:2}" +%s 2>/dev/null || true)"
+    end_epoch="$(date -d "${end_raw:0:4}-${end_raw:4:2}-${end_raw:6:2} ${end_raw:9:2}:${end_raw:11:2}:${end_raw:13:2}" +%s 2>/dev/null || true)"
+    if [ -z "${start_epoch}" ] || [ -z "${end_epoch}" ]; then
+      warn "无法解析时间范围。"
+      exit 1
+    fi
+  fi
+
+  if [ "${start_epoch}" -gt "${end_epoch}" ]; then
+    warn "时间范围错误：开始时间不能晚于结束时间。"
+    exit 1
+  fi
+
+  awk -v s="${start_epoch}" -v e="${end_epoch}" '
+    BEGIN {
+      mon["Jan"]=1; mon["Feb"]=2; mon["Mar"]=3; mon["Apr"]=4; mon["May"]=5; mon["Jun"]=6;
+      mon["Jul"]=7; mon["Aug"]=8; mon["Sep"]=9; mon["Oct"]=10; mon["Nov"]=11; mon["Dec"]=12;
+      local_epoch = systime();
+      local_fmt = strftime("%Y %m %d %H %M %S", local_epoch);
+      local_epoch_by_mktime = mktime(local_fmt);
+      # local_tz_offset = 本地时区相对 UTC 的秒偏移（东区为正）
+      local_tz_offset = local_epoch_by_mktime - local_epoch;
+    }
+    {
+      # 匹配常见 Nginx/Apache 时间戳：[08/Apr/2026:17:21:33 +0800]
+      if (match($0, /\[([0-9]{2})\/([A-Za-z]{3})\/([0-9]{4}):([0-9]{2}):([0-9]{2}):([0-9]{2})( [+-][0-9]{4})?\]/, a)) {
+        epoch_local = mktime(a[3] " " mon[a[2]] " " a[1] " " a[4] " " a[5] " " a[6]);
+        tz_seconds = local_tz_offset;
+        # 若日志行自带时区偏移（如 +0800），则按该偏移换算为 UTC epoch
+        if (a[7] != "") {
+          sign = substr(a[7], 2, 1);
+          hh = substr(a[7], 3, 2) + 0;
+          mm = substr(a[7], 5, 2) + 0;
+          z = (hh * 3600) + (mm * 60);
+          if (sign == "-") {
+            z = -z;
+          }
+          tz_seconds = z;
+        }
+        epoch = epoch_local + local_tz_offset - tz_seconds;
+        if (epoch >= s && epoch <= e) {
+          print $0;
+        }
+      }
+    }
+  ' "${log_file}"
+}
+
+goaccess_report() {
+  if ! check_cmd goaccess; then
+    warn "GoAccess 未安装。"
+    return
+  fi
+
+  log_dir="$(discover_log_dir)"
+  log_file="$(select_log_file "${log_dir}")"
+
+  title "选择时间切片"
+  echo "1) 过去 1 小时"
+  echo "2) 今天"
+  echo "3) 昨天"
+  echo "4) 自定义范围（20260401_000000-20260403_120000）"
+  read -r tsel
+
+  mode=""
+  case "${tsel}" in
+    1) mode="1h" ;;
+    2) mode="today" ;;
+    3) mode="yesterday" ;;
+    4) echo "请输入时间范围：" ; read -r mode ;;
+    *) warn "无效选择"; return ;;
+  esac
+
+  out_html="/tmp/goaccess-report-$(date +%Y%m%d%H%M%S).html"
+  slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+    --log-format=COMBINED \
+    --date-format=%d/%b/%Y \
+    --time-format=%H:%M:%S \
+    --real-time-html \
+    --output="${out_html}" \
+    --language=zh_CN
+  if [ $? -eq 0 ]; then
+    ok "报告生成成功：${out_html}"
+  else
+    warn "GoAccess 报告生成失败。"
+  fi
+}
+
+show_alerts() {
+  if ! check_cmd cscli; then
+    warn "CrowdSec 未安装。"
+    return
+  fi
+  cscli alerts list
+}
+
+is_ip_or_cidr() {
+  val="$1"
+  if echo "${val}" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+    return 0
+  fi
+  if echo "${val}" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$'; then
+    return 0
+  fi
+  return 1
+}
+
+ban_ip() {
+  echo "请输入要封禁的 IP 或 CIDR："
+  read -r target
+  if ! is_ip_or_cidr "${target}"; then
+    warn "格式非法，请输入正确的 IP/CIDR。"
+    return
+  fi
+  cscli decisions add --ip "${target}" || cscli decisions add --range "${target}"
+  if [ $? -eq 0 ]; then
+    ok "封禁成功：${target}"
+  else
+    warn "封禁失败：${target}"
+  fi
+}
+
+unban_ip() {
+  tmpf="/tmp/dt-webm-decisions-$$.txt"
+  cscli decisions list > "${tmpf}" || true
+  if ! grep -qE '([0-9]{1,3}\.){3}[0-9]{1,3}' "${tmpf}"; then
+    warn "当前无封禁记录。"
+    rm -f "${tmpf}"
+    return
+  fi
+  echo "当前封禁列表："
+  nl -w2 -s'. ' "${tmpf}"
+  echo "请输入要解封的序号或直接输入 IP："
+  read -r input
+  target=""
+  if echo "${input}" | grep -Eq '^[0-9]+$'; then
+    target="$(sed -n "${input}p" "${tmpf}" | awk '{for(i=1;i<=NF;i++){if($i ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}/){print $i;break}}}')"
+  else
+    target="${input}"
+  fi
+  rm -f "${tmpf}"
+  if [ -z "${target}" ]; then
+    warn "未解析到有效 IP。"
+    return
+  fi
+  cscli decisions delete --ip "${target}"
+  if [ $? -eq 0 ]; then
+    ok "解封成功：${target}"
+  else
+    warn "解封失败：${target}"
+  fi
+}
+
+manage_decisions() {
+  if ! check_cmd cscli; then
+    warn "CrowdSec 未安装。"
+    return
+  fi
+  title "封禁管理"
+  echo "1) 查看封禁"
+  echo "2) 手动封禁"
+  echo "3) 解除封禁"
+  read -r dsel
+  case "${dsel}" in
+    1) cscli decisions list ;;
+    2) ban_ip ;;
+    3) unban_ip ;;
+    *) warn "无效选择" ;;
+  esac
+}
+
+configure_webhook() {
+  load_config
+  title "Webhook 配置"
+  echo "请选择类型："
+  echo "1) 钉钉"
+  echo "2) 飞书"
+  echo "3) Telegram"
+  read -r wtype
+  case "${wtype}" in
+    1) wname="dingtalk" ;;
+    2) wname="feishu" ;;
+    3) wname="telegram" ;;
+    *) warn "无效选择"; return ;;
+  esac
+  echo "请输入完整 Webhook URL（或 Bot API URL）："
+  read -r wurl
+  if [ -z "${wurl}" ]; then
+    warn "URL 不能为空。"
+    return
+  fi
+  save_kv "WEBHOOK_TYPE" "${wname}"
+  save_kv "WEBHOOK_URL" "${wurl}"
+  ok "Webhook 已保存。"
+}
+
+normalize_ports() {
+  raw="$1"
+  cleaned="$(echo "${raw}" | tr -d ' ')"
+  if [ -z "${cleaned}" ]; then
+    return 1
+  fi
+
+  IFS=',' read -r -a arr <<< "${cleaned}"
+  out=""
+  for p in "${arr[@]}"; do
+    if ! echo "${p}" | grep -Eq '^[0-9]+$'; then
+      return 1
+    fi
+    if [ "${p}" -lt 1 ] || [ "${p}" -gt 65535 ]; then
+      return 1
+    fi
+    if [ -z "${out}" ]; then
+      out="${p}"
+    else
+      case ",${out}," in
+        *,"${p}",*) ;;
+        *) out="${out},${p}" ;;
+      esac
+    fi
+  done
+  echo "${out}"
+}
+
+configure_allow_ports() {
+  load_config
+  current="${ALLOW_PORTS:-22,80,443,28866}"
+  title "端口白名单配置"
+  echo "当前建议放行端口：${current}"
+  echo "请输入新的端口列表（逗号分隔，例如 22,80,443,28866）："
+  read -r input_ports
+  normalized="$(normalize_ports "${input_ports}" || true)"
+  if [ -z "${normalized}" ]; then
+    warn "端口格式非法，请输入 1-65535 的端口号，并用逗号分隔。"
+    return
+  fi
+  save_kv "ALLOW_PORTS" "${normalized}"
+  ok "已保存端口白名单：${normalized}"
+}
+
+install_webhook_script() {
+  cat > "${WEBHOOK_SCRIPT}" <<'EOF'
+#!/usr/bin/env bash
+set -e
+CONFIG_FILE="/etc/dt-webm/config.conf"
+STATE_DIR="/var/lib/dt-webm"
+STATE_FILE="${STATE_DIR}/webhook-state.db"
+LOCK_FILE="${STATE_DIR}/webhook-state.lock"
+[ -f "${CONFIG_FILE}" ] || exit 0
+. "${CONFIG_FILE}" || true
+[ -n "${WEBHOOK_URL:-}" ] || exit 0
+mkdir -p "${STATE_DIR}"
+touch "${STATE_FILE}"
+
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"${LOCK_FILE}"
+  flock -n 9 || exit 0
+fi
+
+ALERTS="$(cscli alerts list -o json 2>/dev/null || echo '[]')"
+DECISIONS="$(cscli decisions list -o json 2>/dev/null || echo '[]')"
+
+send_msg() {
+  msg="$1"
+  case "${WEBHOOK_TYPE:-}" in
+    dingtalk|feishu)
+      curl -sS -X POST "${WEBHOOK_URL}" \
+        -H 'Content-Type: application/json' \
+        -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"${msg}\"}}" >/dev/null || true
+      ;;
+    telegram)
+      curl -sS -X POST "${WEBHOOK_URL}" \
+        -H 'Content-Type: application/json' \
+        -d "{\"text\":\"${msg}\"}" >/dev/null || true
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+is_sent() {
+  sig="$1"
+  grep -Fqx "${sig}" "${STATE_FILE}" 2>/dev/null
+}
+
+mark_sent() {
+  sig="$1"
+  echo "${sig}" >> "${STATE_FILE}"
+}
+
+# 仅推送未发送过的最新 20 条告警
+echo "${ALERTS}" | jq -r '
+  .[]? |
+  "alert|\(.id // "na")|\(.source.ip // "unknown")|\(.scenario // "unknown")|\(.start_at // "na")|\(.country // "unknown")"
+' | tail -n 20 | while IFS='|' read -r kind aid ip reason start_at country; do
+  sig="${kind}|${aid}|${ip}|${reason}|${start_at}"
+  if ! is_sent "${sig}"; then
+    msg="CrowdSec 告警
+IP: ${ip}
+地区: ${country}
+原因: ${reason}
+时间: ${start_at}"
+    send_msg "${msg}"
+    mark_sent "${sig}"
+  fi
+done
+
+# 仅推送未发送过的最新 20 条决策
+echo "${DECISIONS}" | jq -r '
+  .[]? |
+  "decision|\(.id // "na")|\(.value // "unknown")|\(.scenario // "manual")|\(.created_at // "na")|\(.type // "unknown")"
+' | tail -n 20 | while IFS='|' read -r kind did value scenario created_at dtype; do
+  sig="${kind}|${did}|${value}|${scenario}|${created_at}"
+  if ! is_sent "${sig}"; then
+    msg="CrowdSec 决策
+目标: ${value}
+类型: ${dtype}
+来源: ${scenario}
+时间: ${created_at}"
+    send_msg "${msg}"
+    mark_sent "${sig}"
+  fi
+done
+
+# 保留最近 2000 条，避免状态文件无限增长
+tail -n 2000 "${STATE_FILE}" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "${STATE_FILE}"
+EOF
+  chmod +x "${WEBHOOK_SCRIPT}"
+}
+
+setup_alert_push_cron() {
+  install_webhook_script
+  tmpc="/tmp/dt-webm-cron-$$.txt"
+  crontab -l 2>/dev/null | grep -v "${CRON_ALERT_MARK}" > "${tmpc}" || true
+  echo "*/5 * * * * ${WEBHOOK_SCRIPT} ${CRON_ALERT_MARK}" >> "${tmpc}"
+  crontab "${tmpc}"
+  rm -f "${tmpc}"
+  ok "已配置告警推送定时任务（每 5 分钟检查一次）。"
+}
+
+update_geoip_db() {
+  load_config
+  mkdir -p /var/lib/dt-webm
+  db_file="/var/lib/dt-webm/geoip.mmdb"
+
+  if [ -n "${GEOIP_URL:-}" ]; then
+    curl -fsSL "${GEOIP_URL}" -o "${db_file}"
+  else
+    warn "未配置 GEOIP_URL，无法自动下载。请在配置文件中添加 GEOIP_URL。"
+    return
+  fi
+
+  if [ $? -eq 0 ]; then
+    ok "GeoIP 数据库更新成功：${db_file}"
+  else
+    warn "GeoIP 更新失败。"
+  fi
+}
+
+setup_geoip_cron() {
+  tmpc="/tmp/dt-webm-geoip-cron-$$.txt"
+  crontab -l 2>/dev/null | grep -v "${CRON_GEOIP_MARK}" > "${tmpc}" || true
+  echo "0 3 1 * * /usr/local/bin/dt-webm geoip-update ${CRON_GEOIP_MARK}" >> "${tmpc}"
+  crontab "${tmpc}"
+  rm -f "${tmpc}"
+  ok "已配置 GeoIP 月度更新任务（每月 1 日 03:00）。"
+}
+
+do_install_cmd() {
+  require_root
+  script_abs="$(readlink -f "$0" 2>/dev/null || realpath "$0")"
+  ln -sf "${script_abs}" /usr/local/bin/dt-webm
+  if [ $? -eq 0 ]; then
+    ok "已注册全局命令：/usr/local/bin/dt-webm -> ${script_abs}"
+  fi
+
+  detect_pkg_mgr
+  prompt_install_dependencies
+  log_dir="$(discover_log_dir)"
+  set_log_acl "${log_dir}"
+  setup_geoip_cron
+  setup_alert_push_cron
+
+  load_config
+  ports="${ALLOW_PORTS:-22,80,443,28866}"
+  info "请确认防火墙已放行端口：${ports}。"
+}
+
+show_main_menu() {
+  title "dt-webm 轻量服务器安全管理"
+  echo "1) 依赖检查与安装"
+  echo "2) GoAccess 日志统计"
+  echo "3) CrowdSec 攻击警报"
+  echo "4) CrowdSec 封禁管理"
+  echo "5) Webhook 配置"
+  echo "6) 端口白名单配置"
+  echo "7) 更新 GeoIP 数据库"
+  echo "8) 配置 GeoIP 月度任务"
+  echo "9) 配置告警推送任务"
+  echo "10) 安装全局命令（install）"
+  echo "0) 退出"
+  echo "请输入序号："
+}
+
+main() {
+  detect_pkg_mgr
+  ensure_config
+  ensure_default_config_values
+
+  case "${1:-}" in
+    install) do_install_cmd; exit 0 ;;
+    geoip-update) update_geoip_db; exit 0 ;;
+    "")
+      :
+      ;;
+    *)
+      warn "未知命令：$1"
+      echo "用法：dt-webm [install|geoip-update]"
+      exit 1
+      ;;
+  esac
+
+  while true; do
+    show_main_menu
+    read -r sel
+    case "${sel}" in
+      1) prompt_install_dependencies ;;
+      2) goaccess_report ;;
+      3) show_alerts ;;
+      4) manage_decisions ;;
+      5) configure_webhook ;;
+      6) configure_allow_ports ;;
+      7) update_geoip_db ;;
+      8) setup_geoip_cron ;;
+      9) setup_alert_push_cron ;;
+      10) do_install_cmd ;;
+      0) ok "已退出。"; exit 0 ;;
+      *) warn "无效选择，请重试。" ;;
+    esac
+    echo
+  done
+}
+
+main "$@"
