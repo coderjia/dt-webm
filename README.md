@@ -65,7 +65,7 @@ curl -fsSL https://raw.githubusercontent.com/coderjia/dt-webm/main/install.sh | 
 安装器会自动完成：
 
 - root 与 `curl` 环境检查
-- 下载仓库 `dt-webm.sh` 到临时目录并安装到 `/usr/local/bin/dt-webm`
+- 下载仓库 `dt-webm` 到临时目录并安装到 `/usr/local/bin/dt-webm`
 - 自动检测 `/usr/local/bin` 是否在 PATH 中（不在则写入 `/etc/profile.d/dt-webm-path.sh`）
 - 初始化 `/etc/dt-webm/config.conf`
 - 自动探测 SSH IP 写入 CrowdSec 白名单（若 `cscli` 可用）

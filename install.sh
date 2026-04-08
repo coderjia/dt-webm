@@ -2,7 +2,7 @@
 set -e
 
 REPO_RAW_BASE="https://raw.githubusercontent.com/coderjia/dt-webm/main"
-MAIN_SCRIPT_URL="${REPO_RAW_BASE}/dt-webm.sh"
+MAIN_SCRIPT_URL="${REPO_RAW_BASE}/dt-webm"
 TARGET_BIN="/usr/local/bin/dt-webm"
 CONFIG_DIR="/etc/dt-webm"
 CONFIG_FILE="${CONFIG_DIR}/config.conf"
