@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
-REPO_RAW_BASE="https://raw.githubusercontent.com/coderjia/dt-webm/main"
-MAIN_SCRIPT_URL="${REPO_RAW_BASE}/dt-webm"
+# 与主脚本 dt-webm 自更新一致：GitHub / Gitee 二选一 raw 根路径
+REPO_RAW_BASE_GITHUB="https://raw.githubusercontent.com/coderjia/dt-webm/main"
+REPO_RAW_BASE_GITEE="https://gitee.com/coderjia/dt-webm/raw/main"
+MAIN_SCRIPT_URL=""
+INSTALL_SOURCE_NAME=""
 TARGET_BIN="/usr/local/bin/dt-webm"
 CONFIG_DIR="/etc/dt-webm"
 CONFIG_FILE="${CONFIG_DIR}/config.conf"
@@ -32,6 +35,34 @@ check_curl() {
   fi
 }
 
+# 选择安装脚本下载源（与 dt-webm self-update 菜单一致）
+pick_install_source() {
+  title "下载源"
+  if [ -r /dev/tty ]; then
+    echo "1) GitHub（默认）" > /dev/tty
+    echo "2) Gitee（中国大陆网络受限可选）" > /dev/tty
+    echo "请输入序号 [1/2]：" > /dev/tty
+    read -r src_sel < /dev/tty
+  else
+    echo "1) GitHub（默认）"
+    echo "2) Gitee（中国大陆网络受限可选）"
+    echo "请输入序号 [1/2]："
+    read -r src_sel
+  fi
+  case "${src_sel:-1}" in
+    2)
+      INSTALL_SOURCE_NAME="Gitee"
+      MAIN_SCRIPT_URL="${REPO_RAW_BASE_GITEE}/dt-webm"
+      ;;
+    *)
+      INSTALL_SOURCE_NAME="GitHub"
+      MAIN_SCRIPT_URL="${REPO_RAW_BASE_GITHUB}/dt-webm"
+      ;;
+  esac
+  info "已选下载源：${INSTALL_SOURCE_NAME}"
+  info "脚本地址：${MAIN_SCRIPT_URL}"
+}
+
 ensure_usr_local_bin_in_path() {
   case ":${PATH}:" in
     *:/usr/local/bin:*)
@@ -55,7 +86,7 @@ EOF
 download_and_install_main() {
   title "下载并安装主程序"
   tmp_file="$(mktemp /tmp/dt-webm.XXXXXX)"
-  info "正在连接 GitHub Raw：${MAIN_SCRIPT_URL}"
+  info "正在连接 ${INSTALL_SOURCE_NAME} Raw：${MAIN_SCRIPT_URL}"
   info "下载参数：连接超时 8 秒，最大耗时 60 秒，失败自动重试 3 次。"
   if ! curl -fSL \
     --connect-timeout 8 \
@@ -223,6 +254,7 @@ main() {
   title "dt-webm 一键安装"
   require_root
   check_curl
+  pick_install_source
   ensure_usr_local_bin_in_path
   download_and_install_main
   init_config_file
