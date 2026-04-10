@@ -90,6 +90,7 @@ dt-webm
 dt-webm install       # 注册全局命令并初始化依赖与定时任务
 dt-webm geoip-update  # 手动更新 GeoIP 数据库
 dt-webm metrics       # CrowdSec 运行指标（cscli metrics 子菜单）
+dt-webm self-update   # 从 GitHub Raw 自更新主程序（需确认，覆盖当前脚本路径）
 ```
 
 ---
@@ -133,6 +134,7 @@ ALLOW_PORTS="22,80,443"
 - 配置 GeoIP 月度任务
 - 配置告警推送任务
 - 安装全局命令（install）
+- 程序自更新（从 GitHub 拉取最新 `dt-webm` 覆盖当前安装路径，需确认）
 
 ---
 

@@ -12,6 +12,10 @@ WEBHOOK_SCRIPT="/usr/local/bin/dt-webm-webhook.sh"
 CRON_GEOIP_MARK="# dt-webm-geoip-update"
 CRON_ALERT_MARK="# dt-webm-alert-push"
 
+# 自更新：与 install.sh 保持一致的 GitHub Raw 源
+REPO_RAW_BASE="https://raw.githubusercontent.com/coderjia/dt-webm/main"
+REMOTE_DT_WEBM_URL="${REPO_RAW_BASE}/dt-webm"
+
 COLOR_RED='\033[0;31m'
 COLOR_GREEN='\033[0;32m'
 COLOR_BLUE='\033[0;34m'
@@ -817,6 +821,77 @@ setup_geoip_cron() {
   ok "已配置 GeoIP 月度更新任务（每月 1 日 03:00）。"
 }
 
+# 从远程拉取最新 dt-webm 覆盖当前正在使用的脚本文件（需确认）
+self_update_dt_webm() {
+  title "程序自更新"
+  if ! check_cmd curl; then
+    warn "未检测到 curl，无法自更新。"
+    return 1
+  fi
+
+  local target
+  target="$(readlink -f "$0" 2>/dev/null || realpath "$0")"
+  if [ -z "${target}" ] || [ ! -f "${target}" ]; then
+    warn "无法解析当前脚本路径。"
+    return 1
+  fi
+
+  info "远程地址：${REMOTE_DT_WEBM_URL}"
+  info "将覆盖本地文件：${target}"
+  info "确认执行自更新？(y/n)"
+  if [ -r /dev/tty ]; then
+    read -r ans < /dev/tty
+  else
+    read -r ans
+  fi
+  if [ "${ans}" != "y" ]; then
+    info "已取消自更新。"
+    return 0
+  fi
+
+  if [ ! -w "${target}" ] && [ "$(id -u)" -ne 0 ]; then
+    warn "目标文件不可写：${target}"
+    warn "请使用 root 执行，例如：sudo dt-webm self-update"
+    return 1
+  fi
+
+  tmp_file="$(mktemp /tmp/dt-webm-self-update.XXXXXX)"
+  show_exec_line "curl -fSL ${REMOTE_DT_WEBM_URL} -o ${tmp_file}（含超时与重试）"
+  info "正在下载，请稍候…"
+  if ! curl -fSL \
+    --connect-timeout 8 \
+    --max-time 60 \
+    --retry 3 \
+    --retry-delay 2 \
+    --retry-connrefused \
+    "${REMOTE_DT_WEBM_URL}" -o "${tmp_file}"; then
+    warn "下载失败，请检查网络或稍后重试。"
+    warn "可手工验证：curl -I ${REMOTE_DT_WEBM_URL}"
+    rm -f "${tmp_file}"
+    return 1
+  fi
+
+  if [ ! -s "${tmp_file}" ]; then
+    warn "下载内容为空，已中止。"
+    rm -f "${tmp_file}"
+    return 1
+  fi
+
+  if ! head -n 1 "${tmp_file}" | grep -q '^#!'; then
+    warn "下载内容不是合法脚本（缺少 shebang），已中止。"
+    rm -f "${tmp_file}"
+    return 1
+  fi
+
+  show_exec_line "cp -f ${tmp_file} ${target} && chmod 0755 ${target}"
+  cp -f "${tmp_file}" "${target}"
+  chmod 0755 "${target}"
+  rm -f "${tmp_file}"
+
+  ok "自更新完成：${target}"
+  info "请重新运行 dt-webm 以加载新版本。"
+}
+
 do_install_cmd() {
   require_root
   script_abs="$(readlink -f "$0" 2>/dev/null || realpath "$0")"
@@ -851,6 +926,7 @@ show_main_menu() {
   echo "9) 配置 GeoIP 月度任务"
   echo "10) 配置告警推送任务"
   echo "11) 安装全局命令（install）"
+  echo "12) 程序自更新（从 GitHub 拉取最新 dt-webm）"
   echo "0) 退出"
   echo "请输入序号："
 }
@@ -864,12 +940,13 @@ main() {
     install) do_install_cmd; exit 0 ;;
     geoip-update) update_geoip_db; exit 0 ;;
     metrics) show_cscli_metrics; exit 0 ;;
+    self-update) self_update_dt_webm; exit 0 ;;
     "")
       :
       ;;
     *)
       warn "未知命令：$1"
-      echo "用法：dt-webm [install|geoip-update|metrics]"
+      echo "用法：dt-webm [install|geoip-update|metrics|self-update]"
       exit 1
       ;;
   esac
@@ -889,6 +966,7 @@ main() {
       9) setup_geoip_cron ;;
       10) setup_alert_push_cron ;;
       11) do_install_cmd ;;
+      12) self_update_dt_webm ;;
       0) ok "已退出。"; exit 0 ;;
       *) warn "无效选择，请重试。" ;;
     esac
