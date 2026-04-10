@@ -466,6 +466,148 @@ slice_log_by_time() {
   ' "${log_file}"
 }
 
+# 抽样前若干行，判断 NPM/COMBINED 形态（用于选择 GoAccess 尝试顺序）
+# 输出：combined | npm_standard | npm_proxy | unknown
+# - combined：NCSA 行首为客户端 IP，时间戳在后方方括号内（如 default-host、部分 access）
+# - npm_standard：] 后紧跟 三位状态码 - 方法（无 upstream 两段）
+# - npm_proxy：] 后两段 upstream 再状态码 - 方法（官方 log_format proxy）
+detect_goaccess_file_profile() {
+  log_file="$1"
+  n_combined=0
+  n_std=0
+  n_px=0
+  while IFS= read -r line || [ -n "${line}" ]; do
+    [ -z "${line}" ] && continue
+    # COMBINED：行首不是 [，且含 [dd/Mon/yyyy:hh:mm:ss
+    if ! echo "${line}" | grep -qE '^\[' && echo "${line}" | grep -qE '\[[0-9]{2}/[A-Za-z]{3}/[0-9]{4}:[0-9]{2}:[0-9]{2}:[0-9]{2}'; then
+      n_combined=$((n_combined + 1))
+      continue
+    fi
+    if ! echo "${line}" | grep -qE '^\[[0-9]{2}/[A-Za-z]{3}/[0-9]{4}:'; then
+      continue
+    fi
+    # standard 先于 proxy 判断：] 200 - GET / PROPFIND …
+    if echo "${line}" | grep -qE '\][[:space:]]+[0-9]{3}[[:space:]]+-[[:space:]]+[A-Za-z]'; then
+      n_std=$((n_std + 1))
+      continue
+    fi
+    # proxy：] token token 200 - METHOD
+    if echo "${line}" | grep -qE '\][[:space:]]+[^ ]+[[:space:]]+[^ ]+[[:space:]]+[0-9]{3}[[:space:]]+-[[:space:]]+[A-Za-z]'; then
+      n_px=$((n_px + 1))
+    fi
+  done < <(head -n 200 "${log_file}" 2>/dev/null || true)
+
+  if [ "${n_combined}" -gt 0 ] && [ "${n_combined}" -ge "${n_std}" ] && [ "${n_combined}" -ge "${n_px}" ]; then
+    echo "combined"
+    return
+  fi
+  if [ "${n_px}" -gt "${n_std}" ]; then
+    echo "npm_proxy"
+    return
+  fi
+  if [ "${n_std}" -gt "${n_px}" ]; then
+    echo "npm_standard"
+    return
+  fi
+  if [ "${n_std}" -gt 0 ] || [ "${n_px}" -gt 0 ]; then
+    # 数量相同（如 fallback 中 standard/proxy 混排）：先 standard，减少 proxy 模板错位
+    echo "npm_standard"
+    return
+  fi
+  echo "unknown"
+}
+
+# 按格式标识运行一次 goaccess（stdin 来自 slice_log_by_time）
+# 参数：mode log_file out_mode out_html lang_opt format_id（combined|npm_proxy|npm_standard）
+# 返回：goaccess 退出码
+goaccess_run_slice() {
+  mode="$1"
+  log_file="$2"
+  out_mode="$3"
+  out_html="$4"
+  lang_opt="$5"
+  format_id="$6"
+
+  set +e
+  _ga_rc=1
+  case "${format_id}" in
+    combined)
+      if [ "${out_mode}" = "term" ]; then
+        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format=COMBINED --date-format=%d/%b/%Y --time-format=%H:%M:%S"
+        [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+        show_exec_line "${ga_cmd}"
+        slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+          --log-format=COMBINED \
+          --date-format=%d/%b/%Y \
+          --time-format=%H:%M:%S \
+          ${lang_opt}
+      else
+        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format=COMBINED --date-format=%d/%b/%Y --time-format=%H:%M:%S --output=${out_html}"
+        [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+        show_exec_line "${ga_cmd}"
+        slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+          --log-format=COMBINED \
+          --date-format=%d/%b/%Y \
+          --time-format=%H:%M:%S \
+          --output="${out_html}" \
+          ${lang_opt}
+      fi
+      _ga_rc=$?
+      ;;
+    npm_proxy)
+      if [ "${out_mode}" = "term" ]; then
+        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S"
+        [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+        show_exec_line "${ga_cmd}"
+        slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+          --log-format="${GOACCESS_NPM_LOG_FORMAT}" \
+          --date-format=%d/%b/%Y \
+          --time-format=%H:%M:%S \
+          ${lang_opt}
+      else
+        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S --output=${out_html}"
+        [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+        show_exec_line "${ga_cmd}"
+        slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+          --log-format="${GOACCESS_NPM_LOG_FORMAT}" \
+          --date-format=%d/%b/%Y \
+          --time-format=%H:%M:%S \
+          --output="${out_html}" \
+          ${lang_opt}
+      fi
+      _ga_rc=$?
+      ;;
+    npm_standard)
+      if [ "${out_mode}" = "term" ]; then
+        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT_ALT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S"
+        [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+        show_exec_line "${ga_cmd}"
+        slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+          --log-format="${GOACCESS_NPM_LOG_FORMAT_ALT}" \
+          --date-format=%d/%b/%Y \
+          --time-format=%H:%M:%S \
+          ${lang_opt}
+      else
+        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT_ALT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S --output=${out_html}"
+        [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+        show_exec_line "${ga_cmd}"
+        slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+          --log-format="${GOACCESS_NPM_LOG_FORMAT_ALT}" \
+          --date-format=%d/%b/%Y \
+          --time-format=%H:%M:%S \
+          --output="${out_html}" \
+          ${lang_opt}
+      fi
+      _ga_rc=$?
+      ;;
+    *)
+      _ga_rc=1
+      ;;
+  esac
+  set -e
+  return "${_ga_rc}"
+}
+
 goaccess_report() {
   if ! check_cmd goaccess; then
     warn "GoAccess 未安装。"
@@ -480,14 +622,14 @@ goaccess_report() {
     title "日志格式（GoAccess）" > /dev/tty
     echo "1) 通用 COMBINED（Nginx/Apache 默认 access）" > /dev/tty
     echo "2) Nginx Proxy Manager（proxy 自定义：%v 域名、[Client %h] 客户端 IP）" > /dev/tty
-    echo "3) 自动检测（首行含 [Client 则按 NPM）" > /dev/tty
+    echo "3) 自动检测（抽样前 200 行：NCSA / NPM proxy / standard）" > /dev/tty
     echo "请选择：" > /dev/tty
     read -r fmt_sel < /dev/tty
   else
     title "日志格式（GoAccess）"
     echo "1) 通用 COMBINED（Nginx/Apache 默认 access）"
     echo "2) Nginx Proxy Manager（proxy 自定义：%v 域名、[Client %h] 客户端 IP）"
-    echo "3) 自动检测（首行含 [Client 则按 NPM）"
+    echo "3) 自动检测（抽样前 200 行：NCSA / NPM proxy / standard）"
     echo "请选择："
     read -r fmt_sel
   fi
@@ -497,12 +639,13 @@ goaccess_report() {
     1) use_npm=0 ;;
     2) use_npm=1 ;;
     3)
-      if head -n 1 "${log_file}" 2>/dev/null | grep -q '\[Client '; then
-        use_npm=1
-        info "已按 Nginx Proxy Manager 风格解析（检测到 [Client）。"
-      else
+      _auto_prof="$(detect_goaccess_file_profile "${log_file}")"
+      if [ "${_auto_prof}" = "combined" ]; then
         use_npm=0
-        info "未检测到 NPM 特征，使用 COMBINED。"
+        info "自动检测：前 200 行为 NCSA/COMBINED（行首为客户端 IP），仅用 COMBINED。"
+      else
+        use_npm=1
+        info "自动检测：前 200 行形态「${_auto_prof}」，使用 NPM 解析链（失败时回退 COMBINED）。"
       fi
       ;;
     *)
@@ -573,86 +716,45 @@ goaccess_report() {
     *) warn "无效选择，已回退为静态 HTML。"; out_mode="html" ;;
   esac
 
+  ga_ret=1
   if [ "${use_npm}" -eq 1 ]; then
-    info "NPM 格式说明：proxy 行为 upstream_cache/upstream_status 两段（可为 -）+ 最终状态码；standard 回退无 [Sent-to]。"
-    if [ "${out_mode}" = "term" ]; then
-      ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S"
-      [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
-      show_exec_line "${ga_cmd}"
-      set +e
-      slice_log_by_time "${mode}" "${log_file}" | goaccess - \
-        --log-format="${GOACCESS_NPM_LOG_FORMAT}" \
-        --date-format=%d/%b/%Y \
-        --time-format=%H:%M:%S \
-        ${lang_opt}
+    profile="$(detect_goaccess_file_profile "${log_file}")"
+    info "GoAccess：前 200 行抽样为「${profile}」，将按序尝试（含 COMBINED 兜底）。"
+    case "${profile}" in
+      combined)
+        try_list="combined"
+        ;;
+      npm_standard)
+        try_list="npm_standard npm_proxy combined"
+        ;;
+      npm_proxy)
+        try_list="npm_proxy npm_standard combined"
+        ;;
+      *)
+        try_list="npm_proxy npm_standard combined"
+        ;;
+    esac
+    set +e
+    for fmt in ${try_list}; do
+      case "${fmt}" in
+        combined) _ga_label="COMBINED（NCSA）" ;;
+        npm_proxy) _ga_label="NPM proxy" ;;
+        npm_standard) _ga_label="NPM standard" ;;
+        *) _ga_label="${fmt}" ;;
+      esac
+      info "尝试格式：${_ga_label}"
+      goaccess_run_slice "${mode}" "${log_file}" "${out_mode}" "${out_html}" "${lang_opt}" "${fmt}"
       ga_ret=$?
-      if [ "${ga_ret}" -ne 0 ]; then
-        warn "NPM proxy 格式解析失败，尝试 standard（无 upstream / 无 Sent-to）。"
-        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT_ALT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S"
-        [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
-        show_exec_line "${ga_cmd}"
-        slice_log_by_time "${mode}" "${log_file}" | goaccess - \
-          --log-format="${GOACCESS_NPM_LOG_FORMAT_ALT}" \
-          --date-format=%d/%b/%Y \
-          --time-format=%H:%M:%S \
-          ${lang_opt}
-        ga_ret=$?
-      fi
-      set -e
-    else
-      ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S --output=${out_html}"
-      [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
-      show_exec_line "${ga_cmd}"
-      set +e
-      slice_log_by_time "${mode}" "${log_file}" | goaccess - \
-        --log-format="${GOACCESS_NPM_LOG_FORMAT}" \
-        --date-format=%d/%b/%Y \
-        --time-format=%H:%M:%S \
-        --output="${out_html}" \
-        ${lang_opt}
-      ga_ret=$?
-      if [ "${ga_ret}" -ne 0 ]; then
-        warn "NPM proxy 格式解析失败，尝试 standard（无 upstream / 无 Sent-to）。"
-        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT_ALT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S --output=${out_html}"
-        [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
-        show_exec_line "${ga_cmd}"
-        slice_log_by_time "${mode}" "${log_file}" | goaccess - \
-          --log-format="${GOACCESS_NPM_LOG_FORMAT_ALT}" \
-          --date-format=%d/%b/%Y \
-          --time-format=%H:%M:%S \
-          --output="${out_html}" \
-          ${lang_opt}
-        ga_ret=$?
-      fi
-      set -e
-    fi
+      [ "${ga_ret}" -eq 0 ] && break
+      _try_last="$(echo "${try_list}" | awk '{print $NF}')"
+      [ "${fmt}" != "${_try_last}" ] && info "本格式未成功，尝试下一种…"
+    done
+    set -e
   else
-    if [ "${out_mode}" = "term" ]; then
-      ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format=COMBINED --date-format=%d/%b/%Y --time-format=%H:%M:%S"
-      [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
-      show_exec_line "${ga_cmd}"
-      set +e
-      slice_log_by_time "${mode}" "${log_file}" | goaccess - \
-        --log-format=COMBINED \
-        --date-format=%d/%b/%Y \
-        --time-format=%H:%M:%S \
-        ${lang_opt}
-      ga_ret=$?
-      set -e
-    else
-      ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format=COMBINED --date-format=%d/%b/%Y --time-format=%H:%M:%S --output=${out_html}"
-      [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
-      show_exec_line "${ga_cmd}"
-      set +e
-      slice_log_by_time "${mode}" "${log_file}" | goaccess - \
-        --log-format=COMBINED \
-        --date-format=%d/%b/%Y \
-        --time-format=%H:%M:%S \
-        --output="${out_html}" \
-        ${lang_opt}
-      ga_ret=$?
-      set -e
-    fi
+    set +e
+    goaccess_run_slice "${mode}" "${log_file}" "${out_mode}" "${out_html}" "${lang_opt}" "combined"
+    ga_ret=$?
+    set -e
   fi
 
   if [ "${ga_ret}" -eq 0 ]; then
