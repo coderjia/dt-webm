@@ -214,6 +214,11 @@ locales_has_zh_cn_utf8() {
   locale -a 2>/dev/null | grep -qiE 'zh_CN\.(utf8|UTF-8)'
 }
 
+# Debian/Ubuntu：某 deb 是否处于已正确安装状态
+dpkg_pkg_ok_installed() {
+  dpkg -s "$1" 2>/dev/null | grep -q '^Status: install ok installed'
+}
+
 # 安装并生成 zh_CN.UTF-8（需 root；Debian/Ubuntu: locales；RHEL 系: glibc-langpack-zh 等）
 install_locale_zh_cn_packages() {
   title "安装简体中文 locale（zh_CN.UTF-8）"
@@ -223,8 +228,13 @@ install_locale_zh_cn_packages() {
   fi
   detect_pkg_mgr
   if [ "${PKG_MGR}" = "apt" ]; then
-    show_exec_line "apt update && apt install -y locales"
-    apt update && apt install -y locales
+    # locales 已安装时勿再 apt install：否则会触发 dpkg 配置其它待处理包（如半安装的 crowdsec bouncer），导致无关失败
+    if dpkg_pkg_ok_installed locales; then
+      info "软件包 locales 已安装，跳过 apt install，仅启用 locale.gen 并 locale-gen。"
+    else
+      show_exec_line "apt update && apt install -y locales"
+      apt update && apt install -y locales
+    fi
     if [ -f /etc/locale.gen ]; then
       sed -i 's/^#[[:space:]]*zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen
       grep -qE '^zh_CN.UTF-8 UTF-8' /etc/locale.gen 2>/dev/null || echo "zh_CN.UTF-8 UTF-8" >> /etc/locale.gen
