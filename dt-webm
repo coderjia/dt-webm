@@ -277,8 +277,13 @@ discover_log_dir() {
   done
 
   warn "未自动发现日志目录。"
-  echo "请输入日志目录（例如 /var/log/nginx）："
-  read -r user_dir
+  if [ -r /dev/tty ]; then
+    echo "请输入日志目录（例如 /var/log/nginx）：" > /dev/tty
+    read -r user_dir < /dev/tty
+  else
+    echo "请输入日志目录（例如 /var/log/nginx）："
+    read -r user_dir
+  fi
   if [ ! -d "${user_dir}" ]; then
     warn "目录不存在：${user_dir}"
     exit 1
@@ -423,14 +428,18 @@ goaccess_report() {
   log_dir="$(discover_log_dir | awk 'END{print}')"
   log_file="$(select_log_file "${log_dir}")"
 
-  title "日志格式（GoAccess）"
-  echo "1) 通用 COMBINED（Nginx/Apache 默认 access）"
-  echo "2) Nginx Proxy Manager（proxy 自定义：%v 域名、[Client %h] 客户端 IP）"
-  echo "3) 自动检测（首行含 [Client 则按 NPM）"
   if [ -r /dev/tty ]; then
+    title "日志格式（GoAccess）" > /dev/tty
+    echo "1) 通用 COMBINED（Nginx/Apache 默认 access）" > /dev/tty
+    echo "2) Nginx Proxy Manager（proxy 自定义：%v 域名、[Client %h] 客户端 IP）" > /dev/tty
+    echo "3) 自动检测（首行含 [Client 则按 NPM）" > /dev/tty
     echo "请选择：" > /dev/tty
     read -r fmt_sel < /dev/tty
   else
+    title "日志格式（GoAccess）"
+    echo "1) 通用 COMBINED（Nginx/Apache 默认 access）"
+    echo "2) Nginx Proxy Manager（proxy 自定义：%v 域名、[Client %h] 客户端 IP）"
+    echo "3) 自动检测（首行含 [Client 则按 NPM）"
     echo "请选择："
     read -r fmt_sel
   fi
@@ -454,19 +463,38 @@ goaccess_report() {
       ;;
   esac
 
-  title "选择时间切片"
-  echo "1) 过去 1 小时"
-  echo "2) 今天"
-  echo "3) 昨天"
-  echo "4) 自定义范围（20260401_000000-20260403_120000）"
-  read -r tsel
+  if [ -r /dev/tty ]; then
+    title "选择时间切片" > /dev/tty
+    echo "1) 过去 1 小时" > /dev/tty
+    echo "2) 今天" > /dev/tty
+    echo "3) 昨天" > /dev/tty
+    echo "4) 自定义范围（20260401_000000-20260403_120000）" > /dev/tty
+    echo "请选择：" > /dev/tty
+    read -r tsel < /dev/tty
+  else
+    title "选择时间切片"
+    echo "1) 过去 1 小时"
+    echo "2) 今天"
+    echo "3) 昨天"
+    echo "4) 自定义范围（20260401_000000-20260403_120000）"
+    echo "请选择："
+    read -r tsel
+  fi
 
   mode=""
   case "${tsel}" in
     1) mode="1h" ;;
     2) mode="today" ;;
     3) mode="yesterday" ;;
-    4) echo "请输入时间范围：" ; read -r mode ;;
+    4)
+      if [ -r /dev/tty ]; then
+        echo "请输入时间范围：" > /dev/tty
+        read -r mode < /dev/tty
+      else
+        echo "请输入时间范围："
+        read -r mode
+      fi
+      ;;
     *) warn "无效选择"; return ;;
   esac
 
@@ -481,6 +509,7 @@ goaccess_report() {
     ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT}' --date-format=%d/%b/%Y --time-format='%H:%M:%S %z' --real-time-html --output=${out_html}"
     [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
     show_exec_line "${ga_cmd}"
+    set +e
     slice_log_by_time "${mode}" "${log_file}" | goaccess - \
       --log-format="${GOACCESS_NPM_LOG_FORMAT}" \
       --date-format=%d/%b/%Y \
@@ -488,10 +517,13 @@ goaccess_report() {
       --real-time-html \
       --output="${out_html}" \
       ${lang_opt}
+    ga_ret=$?
+    set -e
   else
     ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format=COMBINED --date-format=%d/%b/%Y --time-format=%H:%M:%S --real-time-html --output=${out_html}"
     [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
     show_exec_line "${ga_cmd}"
+    set +e
     slice_log_by_time "${mode}" "${log_file}" | goaccess - \
       --log-format=COMBINED \
       --date-format=%d/%b/%Y \
@@ -499,8 +531,10 @@ goaccess_report() {
       --real-time-html \
       --output="${out_html}" \
       ${lang_opt}
+    ga_ret=$?
+    set -e
   fi
-  if [ $? -eq 0 ]; then
+  if [ "${ga_ret}" -eq 0 ]; then
     ok "报告生成成功：${out_html}"
   else
     warn "GoAccess 报告生成失败。"
