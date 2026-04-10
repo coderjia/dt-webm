@@ -18,12 +18,13 @@ REPO_RAW_BASE_GITEE="https://gitee.com/coderjia/dt-webm/raw/main"
 REMOTE_DT_WEBM_URL_GITHUB="${REPO_RAW_BASE_GITHUB}/dt-webm"
 REMOTE_DT_WEBM_URL_GITEE="${REPO_RAW_BASE_GITEE}/dt-webm"
 
-# GoAccess：Nginx Proxy Manager proxy 日志（兼容多变体）
-# %v=虚拟主机域名，%h 取自 [Client ...]；整段用单引号赋值，避免 shell 对 [] 与 "" 的错误解析
-# PRIMARY: 适配 " - 200 200 - GET https host ... "
-GOACCESS_NPM_LOG_FORMAT='[%d:%t] %^ %s %s %^ %m %^ %v "%U" [Client %h] [Length %b] %^ %^ %^ %^ "%u" "%R"'
-# FALLBACK: 适配 " - 200 - GET https host ... "（单状态码）
-GOACCESS_NPM_LOG_FORMAT_ALT='[%d:%t] %^ %s %^ %m %^ %v "%U" [Client %h] [Length %b] %^ %^ %^ %^ "%u" "%R"'
+# GoAccess：与 NPM 官方 log_format 对齐（见镜像内 /etc/nginx/conf.d/include/log-proxy.conf）
+# proxy:  [$time_local] $upstream_cache_status $upstream_status $status - $request_method ...
+# standard: [$time_local] $status - $request_method ...（无 upstream 两段，无 [Sent-to]）
+# 行首时间戳内时区由 %^ 吸收，故 --time-format 仅含时分秒，勿再带 %z
+# %v=Host，%h=[Client …] 内 IP；整段单引号赋值避免 shell 误解析 [] / ""
+GOACCESS_NPM_LOG_FORMAT='[%d:%t %^] %^ %^ %s - %m %^ %v "%U" [Client %h] [Length %b] [Gzip %^] [Sent-to %^] "%u" "%R"'
+GOACCESS_NPM_LOG_FORMAT_ALT='[%d:%t %^] %s - %m %^ %v "%U" [Client %h] [Length %b] [Gzip %^] "%u" "%R"'
 
 COLOR_RED='\033[0;31m'
 COLOR_GREEN='\033[0;32m'
@@ -573,52 +574,52 @@ goaccess_report() {
   esac
 
   if [ "${use_npm}" -eq 1 ]; then
-    info "NPM 格式说明：--log-format 使用单引号包裹的固定模板；%v 为 Host，%h 为 [Client …] 内 IP。"
+    info "NPM 格式说明：proxy 行为 upstream_cache/upstream_status 两段（可为 -）+ 最终状态码；standard 回退无 [Sent-to]。"
     if [ "${out_mode}" = "term" ]; then
-      ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT}' --date-format=%d/%b/%Y --time-format='%H:%M:%S %z'"
+      ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S"
       [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
       show_exec_line "${ga_cmd}"
       set +e
       slice_log_by_time "${mode}" "${log_file}" | goaccess - \
         --log-format="${GOACCESS_NPM_LOG_FORMAT}" \
         --date-format=%d/%b/%Y \
-        --time-format="%H:%M:%S %z" \
+        --time-format=%H:%M:%S \
         ${lang_opt}
       ga_ret=$?
       if [ "${ga_ret}" -ne 0 ]; then
-        warn "NPM 主格式解析失败，尝试兼容格式（单状态码）。"
-        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT_ALT}' --date-format=%d/%b/%Y --time-format='%H:%M:%S %z'"
+        warn "NPM proxy 格式解析失败，尝试 standard（无 upstream / 无 Sent-to）。"
+        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT_ALT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S"
         [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
         show_exec_line "${ga_cmd}"
         slice_log_by_time "${mode}" "${log_file}" | goaccess - \
           --log-format="${GOACCESS_NPM_LOG_FORMAT_ALT}" \
           --date-format=%d/%b/%Y \
-          --time-format="%H:%M:%S %z" \
+          --time-format=%H:%M:%S \
           ${lang_opt}
         ga_ret=$?
       fi
       set -e
     else
-      ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT}' --date-format=%d/%b/%Y --time-format='%H:%M:%S %z' --output=${out_html}"
+      ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S --output=${out_html}"
       [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
       show_exec_line "${ga_cmd}"
       set +e
       slice_log_by_time "${mode}" "${log_file}" | goaccess - \
         --log-format="${GOACCESS_NPM_LOG_FORMAT}" \
         --date-format=%d/%b/%Y \
-        --time-format="%H:%M:%S %z" \
+        --time-format=%H:%M:%S \
         --output="${out_html}" \
         ${lang_opt}
       ga_ret=$?
       if [ "${ga_ret}" -ne 0 ]; then
-        warn "NPM 主格式解析失败，尝试兼容格式（单状态码）。"
-        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT_ALT}' --date-format=%d/%b/%Y --time-format='%H:%M:%S %z' --output=${out_html}"
+        warn "NPM proxy 格式解析失败，尝试 standard（无 upstream / 无 Sent-to）。"
+        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT_ALT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S --output=${out_html}"
         [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
         show_exec_line "${ga_cmd}"
         slice_log_by_time "${mode}" "${log_file}" | goaccess - \
           --log-format="${GOACCESS_NPM_LOG_FORMAT_ALT}" \
           --date-format=%d/%b/%Y \
-          --time-format="%H:%M:%S %z" \
+          --time-format=%H:%M:%S \
           --output="${out_html}" \
           ${lang_opt}
         ga_ret=$?
