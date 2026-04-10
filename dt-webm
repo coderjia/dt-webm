@@ -12,9 +12,11 @@ WEBHOOK_SCRIPT="/usr/local/bin/dt-webm-webhook.sh"
 CRON_GEOIP_MARK="# dt-webm-geoip-update"
 CRON_ALERT_MARK="# dt-webm-alert-push"
 
-# 自更新：与 install.sh 保持一致的 GitHub Raw 源
-REPO_RAW_BASE="https://raw.githubusercontent.com/coderjia/dt-webm/main"
-REMOTE_DT_WEBM_URL="${REPO_RAW_BASE}/dt-webm"
+# 自更新源：GitHub / Gitee（二选一）
+REPO_RAW_BASE_GITHUB="https://raw.githubusercontent.com/coderjia/dt-webm/main"
+REPO_RAW_BASE_GITEE="https://gitee.com/coderjia/dt-webm/raw/main"
+REMOTE_DT_WEBM_URL_GITHUB="${REPO_RAW_BASE_GITHUB}/dt-webm"
+REMOTE_DT_WEBM_URL_GITEE="${REPO_RAW_BASE_GITEE}/dt-webm"
 
 # GoAccess：Nginx Proxy Manager 默认 proxy 日志（与 NPM 模板一致）
 # %v=虚拟主机域名，%h 取自 [Client ...]；整段用单引号赋值，避免 shell 对 [] 与 "" 的错误解析
@@ -920,7 +922,34 @@ self_update_dt_webm() {
     return 1
   fi
 
-  info "远程地址：${REMOTE_DT_WEBM_URL}"
+  source_name="GitHub"
+  source_url="${REMOTE_DT_WEBM_URL_GITHUB}"
+  if [ -r /dev/tty ]; then
+    echo "请选择更新源：" > /dev/tty
+    echo "1) GitHub（默认）" > /dev/tty
+    echo "2) Gitee（中国大陆网络受限可选）" > /dev/tty
+    echo "请输入序号 [1/2]：" > /dev/tty
+    read -r src_sel < /dev/tty
+  else
+    echo "请选择更新源："
+    echo "1) GitHub（默认）"
+    echo "2) Gitee（中国大陆网络受限可选）"
+    echo "请输入序号 [1/2]："
+    read -r src_sel
+  fi
+  case "${src_sel:-1}" in
+    2)
+      source_name="Gitee"
+      source_url="${REMOTE_DT_WEBM_URL_GITEE}"
+      ;;
+    *)
+      source_name="GitHub"
+      source_url="${REMOTE_DT_WEBM_URL_GITHUB}"
+      ;;
+  esac
+
+  info "更新源：${source_name}"
+  info "远程地址：${source_url}"
   info "将覆盖本地文件：${target}"
   info "确认执行自更新？(y/n)"
   if [ -r /dev/tty ]; then
@@ -940,7 +969,7 @@ self_update_dt_webm() {
   fi
 
   tmp_file="$(mktemp /tmp/dt-webm-self-update.XXXXXX)"
-  show_exec_line "curl -fSL ${REMOTE_DT_WEBM_URL} -o ${tmp_file}（含超时与重试）"
+  show_exec_line "curl -fSL ${source_url} -o ${tmp_file}（含超时与重试）"
   info "正在下载，请稍候…"
   if ! curl -fSL \
     --connect-timeout 8 \
@@ -948,9 +977,9 @@ self_update_dt_webm() {
     --retry 3 \
     --retry-delay 2 \
     --retry-connrefused \
-    "${REMOTE_DT_WEBM_URL}" -o "${tmp_file}"; then
+    "${source_url}" -o "${tmp_file}"; then
     warn "下载失败，请检查网络或稍后重试。"
-    warn "可手工验证：curl -I ${REMOTE_DT_WEBM_URL}"
+    warn "可手工验证：curl -I ${source_url}"
     rm -f "${tmp_file}"
     return 1
   fi
@@ -1010,7 +1039,7 @@ show_main_menu() {
   echo "9) 配置 GeoIP 月度任务"
   echo "10) 配置告警推送任务"
   echo "11) 安装全局命令（install）"
-  echo "12) 程序自更新（从 GitHub 拉取最新 dt-webm）"
+  echo "12) 程序自更新（可选 GitHub / Gitee）"
   echo "0) 退出"
   echo "请输入序号："
 }
