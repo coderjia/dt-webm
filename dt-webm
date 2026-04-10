@@ -74,6 +74,8 @@ WEBHOOK_TYPE=""
 WEBHOOK_URL=""
 # GeoIP 数据库下载地址（支持 DB-IP 或 MaxMind 链接）
 GEOIP_URL=""
+# GoAccess 语言（默认 zh_CN，可按本机支持调整为 zh）
+GOACCESS_LANG="zh_CN"
 # 防火墙建议放行端口（逗号分隔）
 ALLOW_PORTS="22,80,443"
 EOF
@@ -101,6 +103,9 @@ ensure_default_config_values() {
   # 兼容老版本 config.conf 缺少关键键值
   if ! grep -q '^ALLOW_PORTS=' "${CONFIG_FILE}" 2>/dev/null; then
     echo 'ALLOW_PORTS="22,80,443"' >> "${CONFIG_FILE}"
+  fi
+  if ! grep -q '^GOACCESS_LANG=' "${CONFIG_FILE}" 2>/dev/null; then
+    echo 'GOACCESS_LANG="zh_CN"' >> "${CONFIG_FILE}"
   fi
 }
 
@@ -326,14 +331,51 @@ select_log_file() {
 }
 
 build_goaccess_lang_opt() {
-  if goaccess --help 2>/dev/null | grep -q -- '--language'; then
-    echo "--language=zh_CN"
-    return
-  fi
-  if goaccess --help 2>/dev/null | grep -q -- '--lang'; then
-    echo "--lang=zh_CN"
-    return
-  fi
+  load_config
+  preferred_lang="${GOACCESS_LANG:-zh_CN}"
+  help_text="$(goaccess --help 2>/dev/null || true)"
+
+  has_language=0
+  has_lang=0
+  echo "${help_text}" | grep -q -- '--language' && has_language=1
+  echo "${help_text}" | grep -q -- '--lang' && has_lang=1
+
+  # 运行前用最小样本做一次参数探测，避免“参数存在但值不生效/不支持”
+  test_goaccess_lang_opt() {
+    opt="$1"
+    sample_log='127.0.0.1 - - [10/Apr/2026:08:12:49 +0000] "GET / HTTP/1.1" 200 123 "-" "curl/8.0"'
+    tmp_html="/tmp/dt-webm-goaccess-lang-test-$$.html"
+    set +e
+    printf '%s\n' "${sample_log}" | goaccess - \
+      --log-format=COMBINED \
+      --date-format=%d/%b/%Y \
+      --time-format=%H:%M:%S \
+      --output="${tmp_html}" \
+      "${opt}" >/dev/null 2>&1
+    ret=$?
+    set -e
+    rm -f "${tmp_html}" >/dev/null 2>&1 || true
+    [ "${ret}" -eq 0 ]
+  }
+
+  langs_to_try="${preferred_lang} zh_CN zh"
+  for lang in ${langs_to_try}; do
+    if [ "${has_language}" -eq 1 ]; then
+      opt="--language=${lang}"
+      if test_goaccess_lang_opt "${opt}"; then
+        echo "${opt}"
+        return
+      fi
+    fi
+    if [ "${has_lang}" -eq 1 ]; then
+      opt="--lang=${lang}"
+      if test_goaccess_lang_opt "${opt}"; then
+        echo "${opt}"
+        return
+      fi
+    fi
+  done
+
   echo ""
 }
 
@@ -506,40 +548,92 @@ goaccess_report() {
     info "当前 GoAccess 版本不支持中文语言参数，将使用默认语言生成报告。"
   fi
 
+  if [ -r /dev/tty ]; then
+    title "输出方式（GoAccess）" > /dev/tty
+    echo "1) 终端查看（交互模式，按 q 退出）" > /dev/tty
+    echo "2) 生成静态 HTML（推荐）" > /dev/tty
+    echo "请选择：" > /dev/tty
+    read -r out_sel < /dev/tty
+  else
+    title "输出方式（GoAccess）"
+    echo "1) 终端查看（交互模式，按 q 退出）"
+    echo "2) 生成静态 HTML（推荐）"
+    echo "请选择："
+    read -r out_sel
+  fi
+
+  out_mode="html"
+  case "${out_sel}" in
+    1) out_mode="term" ;;
+    2) out_mode="html" ;;
+    *) warn "无效选择，已回退为静态 HTML。"; out_mode="html" ;;
+  esac
+
   if [ "${use_npm}" -eq 1 ]; then
     info "NPM 格式说明：--log-format 使用单引号包裹的固定模板；%v 为 Host，%h 为 [Client …] 内 IP。"
-    ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT}' --date-format=%d/%b/%Y --time-format='%H:%M:%S %z' --real-time-html --output=${out_html}"
-    [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
-    show_exec_line "${ga_cmd}"
-    set +e
-    slice_log_by_time "${mode}" "${log_file}" | goaccess - \
-      --log-format="${GOACCESS_NPM_LOG_FORMAT}" \
-      --date-format=%d/%b/%Y \
-      --time-format="%H:%M:%S %z" \
-      --real-time-html \
-      --output="${out_html}" \
-      ${lang_opt}
-    ga_ret=$?
-    set -e
+    if [ "${out_mode}" = "term" ]; then
+      ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT}' --date-format=%d/%b/%Y --time-format='%H:%M:%S %z'"
+      [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+      show_exec_line "${ga_cmd}"
+      set +e
+      slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+        --log-format="${GOACCESS_NPM_LOG_FORMAT}" \
+        --date-format=%d/%b/%Y \
+        --time-format="%H:%M:%S %z" \
+        ${lang_opt}
+      ga_ret=$?
+      set -e
+    else
+      ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT}' --date-format=%d/%b/%Y --time-format='%H:%M:%S %z' --output=${out_html}"
+      [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+      show_exec_line "${ga_cmd}"
+      set +e
+      slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+        --log-format="${GOACCESS_NPM_LOG_FORMAT}" \
+        --date-format=%d/%b/%Y \
+        --time-format="%H:%M:%S %z" \
+        --output="${out_html}" \
+        ${lang_opt}
+      ga_ret=$?
+      set -e
+    fi
   else
-    ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format=COMBINED --date-format=%d/%b/%Y --time-format=%H:%M:%S --real-time-html --output=${out_html}"
-    [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
-    show_exec_line "${ga_cmd}"
-    set +e
-    slice_log_by_time "${mode}" "${log_file}" | goaccess - \
-      --log-format=COMBINED \
-      --date-format=%d/%b/%Y \
-      --time-format=%H:%M:%S \
-      --real-time-html \
-      --output="${out_html}" \
-      ${lang_opt}
-    ga_ret=$?
-    set -e
+    if [ "${out_mode}" = "term" ]; then
+      ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format=COMBINED --date-format=%d/%b/%Y --time-format=%H:%M:%S"
+      [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+      show_exec_line "${ga_cmd}"
+      set +e
+      slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+        --log-format=COMBINED \
+        --date-format=%d/%b/%Y \
+        --time-format=%H:%M:%S \
+        ${lang_opt}
+      ga_ret=$?
+      set -e
+    else
+      ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format=COMBINED --date-format=%d/%b/%Y --time-format=%H:%M:%S --output=${out_html}"
+      [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+      show_exec_line "${ga_cmd}"
+      set +e
+      slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+        --log-format=COMBINED \
+        --date-format=%d/%b/%Y \
+        --time-format=%H:%M:%S \
+        --output="${out_html}" \
+        ${lang_opt}
+      ga_ret=$?
+      set -e
+    fi
   fi
+
   if [ "${ga_ret}" -eq 0 ]; then
-    ok "报告生成成功：${out_html}"
+    if [ "${out_mode}" = "html" ]; then
+      ok "静态 HTML 报告生成成功：${out_html}"
+    else
+      ok "终端统计已结束。"
+    fi
   else
-    warn "GoAccess 报告生成失败。"
+    warn "GoAccess 执行失败。"
   fi
 }
 

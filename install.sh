@@ -92,6 +92,8 @@ WEBHOOK_TYPE=""
 WEBHOOK_URL=""
 # GeoIP 数据库下载地址（DB-IP 或 MaxMind 直链）
 GEOIP_URL=""
+# GoAccess 语言（默认 zh_CN，可按本机支持调整为 zh）
+GOACCESS_LANG="zh_CN"
 # 防火墙建议放行端口（逗号分隔）
 ALLOW_PORTS="22,80,443"
 EOF
@@ -99,6 +101,9 @@ EOF
   else
     if ! grep -q '^ALLOW_PORTS=' "${CONFIG_FILE}" 2>/dev/null; then
       echo 'ALLOW_PORTS="22,80,443"' >> "${CONFIG_FILE}"
+    fi
+    if ! grep -q '^GOACCESS_LANG=' "${CONFIG_FILE}" 2>/dev/null; then
+      echo 'GOACCESS_LANG="zh_CN"' >> "${CONFIG_FILE}"
     fi
     ok "配置文件已存在，已完成兼容性检查。"
   fi

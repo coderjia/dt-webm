@@ -30,6 +30,7 @@
 - **GoAccess 统计模块**
   - 强制中文界面：`--language=zh_CN`（版本不支持时自动降级）
   - 支持 **COMBINED** 与 **Nginx Proxy Manager** 默认 proxy 日志（`%v` 虚拟主机域名、`[Client %h]` 客户端 IP；`log-format` 在脚本内用单引号定义，避免 `[]` 转义问题）
+  - 支持输出方式选择：终端交互查看（按 `q` 退出）或生成静态 HTML
   - 支持快捷时间切片：过去 1 小时、今天、昨天
   - 支持自定义时间段：`YYYYMMDD_HHMMSS-YYYYMMDD_HHMMSS`
   - 时间切片采用 **epoch 严格比较**，并支持按日志时区偏移（如 `+0800`）修正
@@ -114,6 +115,8 @@ WEBHOOK_TYPE=""
 WEBHOOK_URL=""
 # GeoIP 数据库下载地址（DB-IP 或 MaxMind 直链）
 GEOIP_URL=""
+# GoAccess 语言（默认 zh_CN，可改为 zh）
+GOACCESS_LANG="zh_CN"
 # 防火墙建议放行端口（逗号分隔）
 ALLOW_PORTS="22,80,443"
 ```
