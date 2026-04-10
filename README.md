@@ -28,7 +28,8 @@
   - 自动扫描 `/var/log/nginx`、`/var/log/httpd`
   - 失败时可手动输入并保存到配置文件
 - **GoAccess 统计模块**
-  - 强制中文界面：`--language=zh_CN`
+  - 强制中文界面：`--language=zh_CN`（版本不支持时自动降级）
+  - 支持 **COMBINED** 与 **Nginx Proxy Manager** 默认 proxy 日志（`%v` 虚拟主机域名、`[Client %h]` 客户端 IP；`log-format` 在脚本内用单引号定义，避免 `[]` 转义问题）
   - 支持快捷时间切片：过去 1 小时、今天、昨天
   - 支持自定义时间段：`YYYYMMDD_HHMMSS-YYYYMMDD_HHMMSS`
   - 时间切片采用 **epoch 严格比较**，并支持按日志时区偏移（如 `+0800`）修正
@@ -149,6 +150,14 @@ ALLOW_PORTS="22,80,443"
 
 脚本会将日志行时间解析为 epoch 进行比较，且在日志包含时区字段（如 `+0800`）时自动换算，适合跨时区部署场景。
 
+### GoAccess 与 Nginx Proxy Manager
+
+统计菜单中可选择 **Nginx Proxy Manager** 或 **自动检测**（首行含 `[Client` 则按 NPM 解析）。典型 NPM proxy 行形如：
+
+`[10/Apr/2026:08:12:49 +0000] - 200 200 - GET https example.com "/api/" [Client 1.2.3.4] [Length 61] ...`
+
+对应 GoAccess 使用 `--date-format=%d/%b/%Y`、`--time-format="%H:%M:%S %z"`，与行首时间戳一致。若你的 NPM 在 `[Gzip …]` / `[Sent-to …]` 段字段数量与默认不同，可改选 **COMBINED** 或自行调整脚本内 `GOACCESS_NPM_LOG_FORMAT`（单引号包裹整段 `log-format`）。
+
 ---
 
 ## Webhook 去重与状态缓存
@@ -180,7 +189,7 @@ ALLOW_PORTS="22,80,443"
 ## 常见问题
 
 - **Q: 为什么没有生成 GoAccess 报告？**  
-  A: 请先确认日志路径与日志格式是否为 COMBINED，且 `goaccess` 已安装。
+  A: 请确认 `goaccess` 已安装，并在菜单中选择与日志一致的格式（**COMBINED** 或 **Nginx Proxy Manager** / 自动检测）。NPM 日志请勿选错为 COMBINED。
 
 - **Q: 为什么没有收到 Webhook 推送？**  
   A: 检查 `WEBHOOK_URL` 是否可达、`cscli` 是否能返回 JSON、以及是否被去重机制过滤。

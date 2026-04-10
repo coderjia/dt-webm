@@ -16,6 +16,10 @@ CRON_ALERT_MARK="# dt-webm-alert-push"
 REPO_RAW_BASE="https://raw.githubusercontent.com/coderjia/dt-webm/main"
 REMOTE_DT_WEBM_URL="${REPO_RAW_BASE}/dt-webm"
 
+# GoAccess：Nginx Proxy Manager 默认 proxy 日志（与 NPM 模板一致）
+# %v=虚拟主机域名，%h 取自 [Client ...]；整段用单引号赋值，避免 shell 对 [] 与 "" 的错误解析
+GOACCESS_NPM_LOG_FORMAT='[%d:%t] - %s %s - %m %^ %v "%U" [Client %h] [Length %b] %^ %^ %^ %^ "%u" "%R"'
+
 COLOR_RED='\033[0;31m'
 COLOR_GREEN='\033[0;32m'
 COLOR_BLUE='\033[0;34m'
@@ -419,6 +423,37 @@ goaccess_report() {
   log_dir="$(discover_log_dir | awk 'END{print}')"
   log_file="$(select_log_file "${log_dir}")"
 
+  title "日志格式（GoAccess）"
+  echo "1) 通用 COMBINED（Nginx/Apache 默认 access）"
+  echo "2) Nginx Proxy Manager（proxy 自定义：%v 域名、[Client %h] 客户端 IP）"
+  echo "3) 自动检测（首行含 [Client 则按 NPM）"
+  if [ -r /dev/tty ]; then
+    echo "请选择：" > /dev/tty
+    read -r fmt_sel < /dev/tty
+  else
+    echo "请选择："
+    read -r fmt_sel
+  fi
+
+  use_npm=0
+  case "${fmt_sel}" in
+    1) use_npm=0 ;;
+    2) use_npm=1 ;;
+    3)
+      if head -n 1 "${log_file}" 2>/dev/null | grep -q '\[Client '; then
+        use_npm=1
+        info "已按 Nginx Proxy Manager 风格解析（检测到 [Client）。"
+      else
+        use_npm=0
+        info "未检测到 NPM 特征，使用 COMBINED。"
+      fi
+      ;;
+    *)
+      warn "无效选择，已回退为 COMBINED。"
+      use_npm=0
+      ;;
+  esac
+
   title "选择时间切片"
   echo "1) 过去 1 小时"
   echo "2) 今天"
@@ -440,16 +475,31 @@ goaccess_report() {
   if [ -z "${lang_opt}" ]; then
     info "当前 GoAccess 版本不支持中文语言参数，将使用默认语言生成报告。"
   fi
-  ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format=COMBINED --date-format=%d/%b/%Y --time-format=%H:%M:%S --real-time-html --output=${out_html}"
-  [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
-  show_exec_line "${ga_cmd}"
-  slice_log_by_time "${mode}" "${log_file}" | goaccess - \
-    --log-format=COMBINED \
-    --date-format=%d/%b/%Y \
-    --time-format=%H:%M:%S \
-    --real-time-html \
-    --output="${out_html}" \
-    ${lang_opt}
+
+  if [ "${use_npm}" -eq 1 ]; then
+    info "NPM 格式说明：--log-format 使用单引号包裹的固定模板；%v 为 Host，%h 为 [Client …] 内 IP。"
+    ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT}' --date-format=%d/%b/%Y --time-format='%H:%M:%S %z' --real-time-html --output=${out_html}"
+    [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+    show_exec_line "${ga_cmd}"
+    slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+      --log-format="${GOACCESS_NPM_LOG_FORMAT}" \
+      --date-format=%d/%b/%Y \
+      --time-format="%H:%M:%S %z" \
+      --real-time-html \
+      --output="${out_html}" \
+      ${lang_opt}
+  else
+    ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format=COMBINED --date-format=%d/%b/%Y --time-format=%H:%M:%S --real-time-html --output=${out_html}"
+    [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+    show_exec_line "${ga_cmd}"
+    slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+      --log-format=COMBINED \
+      --date-format=%d/%b/%Y \
+      --time-format=%H:%M:%S \
+      --real-time-html \
+      --output="${out_html}" \
+      ${lang_opt}
+  fi
   if [ $? -eq 0 ]; then
     ok "报告生成成功：${out_html}"
   else
