@@ -84,6 +84,14 @@ sudo ./dt-webm install
 dt-webm
 ```
 
+常用子命令：
+
+```bash
+dt-webm install       # 注册全局命令并初始化依赖与定时任务
+dt-webm geoip-update  # 手动更新 GeoIP 数据库
+dt-webm metrics       # CrowdSec 运行指标（cscli metrics 子菜单）
+```
+
 ---
 
 ## 配置文件
@@ -117,6 +125,7 @@ ALLOW_PORTS="22,80,443"
 - 依赖检查与安装
 - GoAccess 日志统计
 - CrowdSec 攻击警报
+- CrowdSec 运行指标（`cscli metrics`，含 JSON/帮助/自定义参数）
 - CrowdSec 封禁管理
 - Webhook 配置
 - 端口白名单配置

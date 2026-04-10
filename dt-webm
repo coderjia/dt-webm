@@ -23,6 +23,11 @@ ok() { echo -e "${COLOR_GREEN}[成功]${COLOR_RESET} $*"; }
 warn() { echo -e "${COLOR_RED}[警告]${COLOR_RESET} $*"; }
 info() { echo -e "${COLOR_YELLOW}[提示]${COLOR_RESET} $*"; }
 
+# 执行外部命令前输出等效命令行，便于核对、审计与复制
+show_exec_line() {
+  info "将执行：$*"
+}
+
 require_root() {
   if [ "$(id -u)" -ne 0 ]; then
     warn "此操作需要 root 权限，请使用 sudo 或 root 用户执行。"
@@ -116,12 +121,14 @@ whitelist_self_ip() {
   fi
 
   title "写入自杀保护白名单"
+  show_exec_line "cscli parsers add crowdsecurity/whitelists"
   if cscli parsers add crowdsecurity/whitelists >/dev/null 2>&1 || true; then
     :
   fi
 
   mkdir -p /etc/crowdsec/parsers/s02-enrich/
   wl_file="/etc/crowdsec/parsers/s02-enrich/dt-webm-whitelist.yaml"
+  show_exec_line "cat > ${wl_file}（写入当前 SSH IP 白名单）"
   cat > "${wl_file}" <<EOF
 name: dt-webm/self-whitelist
 description: "dt-webm 自动白名单"
@@ -132,6 +139,7 @@ whitelist:
 EOF
   if [ $? -eq 0 ]; then
     ok "已将 ${ssh_ip} 写入 CrowdSec 白名单配置。"
+    show_exec_line "systemctl restart crowdsec"
     systemctl restart crowdsec >/dev/null 2>&1 || true
   else
     warn "白名单写入失败。"
@@ -152,6 +160,7 @@ set_log_acl() {
       ${PKG_MGR} install -y acl
     fi
   fi
+  show_exec_line "setfacl -R -m u:crowdsec:rx ${log_dir} && setfacl -R -d -m u:crowdsec:rx ${log_dir}"
   setfacl -R -m u:crowdsec:rx "${log_dir}" || true
   setfacl -R -d -m u:crowdsec:rx "${log_dir}" || true
   if [ $? -eq 0 ]; then
@@ -166,9 +175,11 @@ install_goaccess() {
     return
   fi
   if [ "${PKG_MGR}" = "apt" ]; then
+    show_exec_line "apt update && apt install -y goaccess jq curl cron"
     apt update
     apt install -y goaccess jq curl cron
   else
+    show_exec_line "${PKG_MGR} install -y epel-release（可选）&& ${PKG_MGR} install -y goaccess jq curl cronie"
     ${PKG_MGR} install -y epel-release || true
     ${PKG_MGR} install -y goaccess jq curl cronie
   fi
@@ -187,13 +198,17 @@ install_crowdsec() {
   fi
 
   if [ "${PKG_MGR}" = "apt" ]; then
+    show_exec_line "apt update && apt install -y curl gnupg lsb-release apt-transport-https（并配置 CrowdSec 仓库后安装 crowdsec 组件）"
     apt update
     apt install -y curl gnupg lsb-release apt-transport-https
+    show_exec_line "curl ... crowdsec gpgkey | gpg --dearmor -o /usr/share/keyrings/crowdsec-archive-keyring.gpg"
     curl -fsSL https://packagecloud.io/crowdsec/crowdsec/gpgkey | gpg --dearmor -o /usr/share/keyrings/crowdsec-archive-keyring.gpg
     echo "deb [signed-by=/usr/share/keyrings/crowdsec-archive-keyring.gpg] https://packagecloud.io/crowdsec/crowdsec/ubuntu/ $(lsb_release -cs) main" > /etc/apt/sources.list.d/crowdsec.list
     apt update
+    show_exec_line "apt install -y crowdsec crowdsec-firewall-bouncer-nftables nftables"
     apt install -y crowdsec crowdsec-firewall-bouncer-nftables nftables
   else
+    show_exec_line "curl -s ... script.rpm.sh | bash && ${PKG_MGR} install -y crowdsec crowdsec-firewall-bouncer-nftables nftables"
     curl -s https://packagecloud.io/install/repositories/crowdsec/crowdsec/script.rpm.sh | bash
     ${PKG_MGR} install -y crowdsec crowdsec-firewall-bouncer-nftables nftables
   fi
@@ -421,6 +436,9 @@ goaccess_report() {
   if [ -z "${lang_opt}" ]; then
     info "当前 GoAccess 版本不支持中文语言参数，将使用默认语言生成报告。"
   fi
+  ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format=COMBINED --date-format=%d/%b/%Y --time-format=%H:%M:%S --real-time-html --output=${out_html}"
+  [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+  show_exec_line "${ga_cmd}"
   slice_log_by_time "${mode}" "${log_file}" | goaccess - \
     --log-format=COMBINED \
     --date-format=%d/%b/%Y \
@@ -440,7 +458,80 @@ show_alerts() {
     warn "CrowdSec 未安装。"
     return
   fi
+  show_exec_line "cscli alerts list"
   cscli alerts list
+}
+
+# CrowdSec 运行指标：封装 cscli metrics 常用选项
+show_cscli_metrics() {
+  if ! check_cmd cscli; then
+    warn "CrowdSec 未安装。"
+    return
+  fi
+
+  if [ -r /dev/tty ]; then
+    title "CrowdSec 运行指标 (cscli metrics)" > /dev/tty
+    echo "1) 默认输出（cscli metrics）" > /dev/tty
+    echo "2) JSON 输出（cscli metrics -o json）" > /dev/tty
+    echo "3) 仅显示帮助（cscli metrics --help）" > /dev/tty
+    echo "4) 自定义追加参数（在 cscli metrics 后追加，如：-o json 或 show）" > /dev/tty
+    echo "0) 返回主菜单" > /dev/tty
+    echo "请选择序号：" > /dev/tty
+    read -r msel < /dev/tty
+  else
+    title "CrowdSec 运行指标 (cscli metrics)"
+    echo "1) 默认输出（cscli metrics）"
+    echo "2) JSON 输出（cscli metrics -o json）"
+    echo "3) 仅显示帮助（cscli metrics --help）"
+    echo "4) 自定义追加参数（在 cscli metrics 后追加，如：-o json 或 show）"
+    echo "0) 返回主菜单"
+    echo "请选择序号："
+    read -r msel
+  fi
+
+  case "${msel}" in
+    1)
+      show_exec_line "cscli metrics"
+      cscli metrics
+      ;;
+    2)
+      show_exec_line "cscli metrics -o json"
+      if cscli metrics -o json 2>/dev/null; then
+        :
+      else
+        show_exec_line "cscli metrics --output json"
+        if cscli metrics --output json 2>/dev/null; then
+          :
+        else
+          warn "当前 cscli 版本可能不支持 JSON 输出，已回退为默认 metrics。"
+          show_exec_line "cscli metrics"
+          cscli metrics
+        fi
+      fi
+      ;;
+    3)
+      show_exec_line "cscli metrics --help"
+      cscli metrics --help
+      ;;
+    4)
+      if [ -r /dev/tty ]; then
+        echo -e "${COLOR_YELLOW}[提示]${COLOR_RESET} 请输入要追加到「cscli metrics」后的参数（可为空则仅执行 metrics）：" > /dev/tty
+        read -r extra < /dev/tty
+      else
+        info "请输入要追加到「cscli metrics」后的参数（可为空则仅执行 metrics）："
+        read -r extra
+      fi
+      show_exec_line "cscli metrics ${extra}"
+      # shellcheck disable=SC2086
+      cscli metrics ${extra}
+      ;;
+    0)
+      return
+      ;;
+    *)
+      warn "无效选择。"
+      ;;
+  esac
 }
 
 is_ip_or_cidr() {
@@ -461,6 +552,7 @@ ban_ip() {
     warn "格式非法，请输入正确的 IP/CIDR。"
     return
   fi
+  show_exec_line "cscli decisions add --ip ${target} || cscli decisions add --range ${target}"
   cscli decisions add --ip "${target}" || cscli decisions add --range "${target}"
   if [ $? -eq 0 ]; then
     ok "封禁成功：${target}"
@@ -471,6 +563,7 @@ ban_ip() {
 
 unban_ip() {
   tmpf="/tmp/dt-webm-decisions-$$.txt"
+  show_exec_line "cscli decisions list"
   cscli decisions list > "${tmpf}" || true
   if ! grep -qE '([0-9]{1,3}\.){3}[0-9]{1,3}' "${tmpf}"; then
     warn "当前无封禁记录。"
@@ -492,6 +585,7 @@ unban_ip() {
     warn "未解析到有效 IP。"
     return
   fi
+  show_exec_line "cscli decisions delete --ip ${target}"
   cscli decisions delete --ip "${target}"
   if [ $? -eq 0 ]; then
     ok "解封成功：${target}"
@@ -511,7 +605,10 @@ manage_decisions() {
   echo "3) 解除封禁"
   read -r dsel
   case "${dsel}" in
-    1) cscli decisions list ;;
+    1)
+      show_exec_line "cscli decisions list"
+      cscli decisions list
+      ;;
     2) ban_ip ;;
     3) unban_ip ;;
     *) warn "无效选择" ;;
@@ -675,12 +772,14 @@ done
 # 保留最近 2000 条，避免状态文件无限增长
 tail -n 2000 "${STATE_FILE}" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "${STATE_FILE}"
 EOF
+  show_exec_line "chmod +x ${WEBHOOK_SCRIPT}"
   chmod +x "${WEBHOOK_SCRIPT}"
 }
 
 setup_alert_push_cron() {
   install_webhook_script
   tmpc="/tmp/dt-webm-cron-$$.txt"
+  show_exec_line "crontab（写入）*/5 * * * * ${WEBHOOK_SCRIPT} ${CRON_ALERT_MARK}"
   crontab -l 2>/dev/null | grep -v "${CRON_ALERT_MARK}" > "${tmpc}" || true
   echo "*/5 * * * * ${WEBHOOK_SCRIPT} ${CRON_ALERT_MARK}" >> "${tmpc}"
   crontab "${tmpc}"
@@ -694,6 +793,7 @@ update_geoip_db() {
   db_file="/var/lib/dt-webm/geoip.mmdb"
 
   if [ -n "${GEOIP_URL:-}" ]; then
+    show_exec_line "curl -fsSL \"\${GEOIP_URL}\" -o ${db_file}"
     curl -fsSL "${GEOIP_URL}" -o "${db_file}"
   else
     warn "未配置 GEOIP_URL，无法自动下载。请在配置文件中添加 GEOIP_URL。"
@@ -709,6 +809,7 @@ update_geoip_db() {
 
 setup_geoip_cron() {
   tmpc="/tmp/dt-webm-geoip-cron-$$.txt"
+  show_exec_line "crontab（写入）0 3 1 * * /usr/local/bin/dt-webm geoip-update ${CRON_GEOIP_MARK}"
   crontab -l 2>/dev/null | grep -v "${CRON_GEOIP_MARK}" > "${tmpc}" || true
   echo "0 3 1 * * /usr/local/bin/dt-webm geoip-update ${CRON_GEOIP_MARK}" >> "${tmpc}"
   crontab "${tmpc}"
@@ -719,6 +820,7 @@ setup_geoip_cron() {
 do_install_cmd() {
   require_root
   script_abs="$(readlink -f "$0" 2>/dev/null || realpath "$0")"
+  show_exec_line "ln -sf ${script_abs} /usr/local/bin/dt-webm"
   ln -sf "${script_abs}" /usr/local/bin/dt-webm
   if [ $? -eq 0 ]; then
     ok "已注册全局命令：/usr/local/bin/dt-webm -> ${script_abs}"
@@ -741,13 +843,14 @@ show_main_menu() {
   echo "1) 依赖检查与安装"
   echo "2) GoAccess 日志统计"
   echo "3) CrowdSec 攻击警报"
-  echo "4) CrowdSec 封禁管理"
-  echo "5) Webhook 配置"
-  echo "6) 端口白名单配置"
-  echo "7) 更新 GeoIP 数据库"
-  echo "8) 配置 GeoIP 月度任务"
-  echo "9) 配置告警推送任务"
-  echo "10) 安装全局命令（install）"
+  echo "4) CrowdSec 运行指标"
+  echo "5) CrowdSec 封禁管理"
+  echo "6) Webhook 配置"
+  echo "7) 端口白名单配置"
+  echo "8) 更新 GeoIP 数据库"
+  echo "9) 配置 GeoIP 月度任务"
+  echo "10) 配置告警推送任务"
+  echo "11) 安装全局命令（install）"
   echo "0) 退出"
   echo "请输入序号："
 }
@@ -760,12 +863,13 @@ main() {
   case "${1:-}" in
     install) do_install_cmd; exit 0 ;;
     geoip-update) update_geoip_db; exit 0 ;;
+    metrics) show_cscli_metrics; exit 0 ;;
     "")
       :
       ;;
     *)
       warn "未知命令：$1"
-      echo "用法：dt-webm [install|geoip-update]"
+      echo "用法：dt-webm [install|geoip-update|metrics]"
       exit 1
       ;;
   esac
@@ -777,13 +881,14 @@ main() {
       1) prompt_install_dependencies ;;
       2) goaccess_report ;;
       3) show_alerts ;;
-      4) manage_decisions ;;
-      5) configure_webhook ;;
-      6) configure_allow_ports ;;
-      7) update_geoip_db ;;
-      8) setup_geoip_cron ;;
-      9) setup_alert_push_cron ;;
-      10) do_install_cmd ;;
+      4) show_cscli_metrics ;;
+      5) manage_decisions ;;
+      6) configure_webhook ;;
+      7) configure_allow_ports ;;
+      8) update_geoip_db ;;
+      9) setup_geoip_cron ;;
+      10) setup_alert_push_cron ;;
+      11) do_install_cmd ;;
       0) ok "已退出。"; exit 0 ;;
       *) warn "无效选择，请重试。" ;;
     esac
