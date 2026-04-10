@@ -78,7 +78,7 @@ WEBHOOK_TYPE=""
 WEBHOOK_URL=""
 # GeoIP 数据库下载地址（支持 DB-IP 或 MaxMind 链接）
 GEOIP_URL=""
-# GoAccess 语言（默认 zh_CN，可按本机支持调整为 zh）
+# GoAccess 界面语言：zh_CN/zh 等表示使用简体中文（运行时注入 LANG/LC_ALL=zh_CN.UTF-8，需系统有该 locale）
 GOACCESS_LANG="zh_CN"
 # 防火墙建议放行端口（逗号分隔）
 ALLOW_PORTS="22,80,443"
@@ -209,6 +209,71 @@ install_goaccess() {
   fi
 }
 
+# 系统是否已提供 zh_CN.UTF-8（GoAccess gettext 中文依赖此 locale）
+locales_has_zh_cn_utf8() {
+  locale -a 2>/dev/null | grep -qiE 'zh_CN\.(utf8|UTF-8)'
+}
+
+# 安装并生成 zh_CN.UTF-8（需 root；Debian/Ubuntu: locales；RHEL 系: glibc-langpack-zh 等）
+install_locale_zh_cn_packages() {
+  title "安装简体中文 locale（zh_CN.UTF-8）"
+  if locales_has_zh_cn_utf8; then
+    ok "locale zh_CN.UTF-8 已可用。"
+    return 0
+  fi
+  detect_pkg_mgr
+  if [ "${PKG_MGR}" = "apt" ]; then
+    show_exec_line "apt update && apt install -y locales"
+    apt update && apt install -y locales
+    if [ -f /etc/locale.gen ]; then
+      sed -i 's/^#[[:space:]]*zh_CN.UTF-8 UTF-8/zh_CN.UTF-8 UTF-8/' /etc/locale.gen
+      grep -qE '^zh_CN.UTF-8 UTF-8' /etc/locale.gen 2>/dev/null || echo "zh_CN.UTF-8 UTF-8" >> /etc/locale.gen
+    fi
+    show_exec_line "locale-gen zh_CN.UTF-8"
+    if check_cmd locale-gen; then
+      locale-gen zh_CN.UTF-8 2>/dev/null || locale-gen
+    fi
+  else
+    show_exec_line "${PKG_MGR} install -y glibc-langpack-zh（或 langpacks）"
+    ${PKG_MGR} install -y glibc-langpack-zh 2>/dev/null || \
+      ${PKG_MGR} install -y langpacks-zh_CN 2>/dev/null || \
+      ${PKG_MGR} install -y glibc-all-langpacks 2>/dev/null || \
+      warn "未能自动安装中文 langpack，请手动安装 glibc-langpack-zh 或 langpacks-zh_CN。"
+  fi
+  if locales_has_zh_cn_utf8; then
+    ok "locale zh_CN.UTF-8 已就绪。"
+  else
+    warn "仍未检测到 zh_CN.UTF-8，请执行 locale -a 排查。"
+  fi
+}
+
+# 当 GOACCESS_LANG 为中文时，检查是否需要安装语言包（在「依赖检查与安装」中调用）
+ensure_goaccess_locale_zh() {
+  load_config
+  case "${GOACCESS_LANG:-zh_CN}" in
+    zh_CN|zh|zh_CN.UTF-8|zh.UTF-8) ;;
+    *) return 0 ;;
+  esac
+
+  if locales_has_zh_cn_utf8; then
+    ok "GoAccess 中文：zh_CN.UTF-8 locale 已就绪。"
+    return 0
+  fi
+
+  warn "配置中 GOACCESS_LANG 为中文，但系统未检测到 zh_CN.UTF-8 locale。"
+  info "GoAccess 中文界面依赖 LANG/LC_ALL=zh_CN.UTF-8（与 gettext 语言包），通常需安装 locales 或 glibc-langpack-zh。"
+  info "是否安装中文语言包并生成 zh_CN.UTF-8？(y/n)"
+  read -r _loc_ans
+  if [ "${_loc_ans}" != "y" ]; then
+    info "已跳过。可稍后以 root 再次执行本菜单安装。"
+    return 0
+  fi
+
+  require_root
+  detect_pkg_mgr
+  install_locale_zh_cn_packages
+}
+
 install_crowdsec() {
   title "安装 CrowdSec 及 nftables Bouncer"
   if check_cmd cscli; then
@@ -249,6 +314,7 @@ prompt_install_dependencies() {
 
   if [ -z "${missing}" ]; then
     ok "依赖检查通过。"
+    ensure_goaccess_locale_zh
     return
   fi
 
@@ -257,6 +323,7 @@ prompt_install_dependencies() {
   read -r ans
   if [ "${ans}" != "y" ]; then
     warn "用户取消安装，部分功能不可用。"
+    ensure_goaccess_locale_zh
     return
   fi
 
@@ -269,6 +336,7 @@ prompt_install_dependencies() {
   ports="${ALLOW_PORTS:-22,80,443}"
   info "防火墙端口提醒：请确保已放行 ${ports} 端口。"
   whitelist_self_ip
+  ensure_goaccess_locale_zh
 }
 
 discover_log_dir() {
@@ -334,53 +402,29 @@ select_log_file() {
   echo "${selected}"
 }
 
-build_goaccess_lang_opt() {
+# 是否与配置一致使用 GoAccess 简体中文界面（通过 LANG/LC_ALL，而非 --lang）
+goaccess_wants_zh_ui() {
   load_config
-  preferred_lang="${GOACCESS_LANG:-zh_CN}"
-  help_text="$(goaccess --help 2>/dev/null || true)"
+  case "${GOACCESS_LANG:-zh_CN}" in
+    zh_CN|zh|zh_CN.UTF-8|zh.UTF-8) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
-  has_language=0
-  has_lang=0
-  echo "${help_text}" | grep -q -- '--language' && has_language=1
-  echo "${help_text}" | grep -q -- '--lang' && has_lang=1
-
-  # 运行前用最小样本做一次参数探测，避免“参数存在但值不生效/不支持”
-  test_goaccess_lang_opt() {
-    opt="$1"
-    sample_log='127.0.0.1 - - [10/Apr/2026:08:12:49 +0000] "GET / HTTP/1.1" 200 123 "-" "curl/8.0"'
-    tmp_html="/tmp/dt-webm-goaccess-lang-test-$$.html"
-    set +e
-    printf '%s\n' "${sample_log}" | goaccess - \
-      --log-format=COMBINED \
-      --date-format=%d/%b/%Y \
-      --time-format=%H:%M:%S \
-      --output="${tmp_html}" \
-      "${opt}" >/dev/null 2>&1
-    ret=$?
-    set -e
-    rm -f "${tmp_html}" >/dev/null 2>&1 || true
-    [ "${ret}" -eq 0 ]
-  }
-
-  langs_to_try="${preferred_lang} zh_CN zh"
-  for lang in ${langs_to_try}; do
-    if [ "${has_language}" -eq 1 ]; then
-      opt="--language=${lang}"
-      if test_goaccess_lang_opt "${opt}"; then
-        echo "${opt}"
-        return
-      fi
-    fi
-    if [ "${has_lang}" -eq 1 ]; then
-      opt="--lang=${lang}"
-      if test_goaccess_lang_opt "${opt}"; then
-        echo "${opt}"
-        return
-      fi
-    fi
-  done
-
-  echo ""
+# 在子 shell 中注入 LANG/LC_ALL 后执行 slice | goaccess（与命令行 LANG=zh_CN.UTF-8 goaccess … 一致）
+goaccess_pipe_from_slice() {
+  _gm="$1"
+  _gf="$2"
+  shift 2
+  if goaccess_wants_zh_ui; then
+    (
+      export LANG=zh_CN.UTF-8
+      export LC_ALL=zh_CN.UTF-8
+      slice_log_by_time "${_gm}" "${_gf}" | goaccess - "$@"
+    )
+  else
+    slice_log_by_time "${_gm}" "${_gf}" | goaccess - "$@"
+  fi
 }
 
 slice_log_by_time() {
@@ -517,86 +561,78 @@ detect_goaccess_file_profile() {
   echo "unknown"
 }
 
-# 按格式标识运行一次 goaccess（stdin 来自 slice_log_by_time）
-# 参数：mode log_file out_mode out_html lang_opt format_id（combined|npm_proxy|npm_standard）
+# 按格式标识运行一次 goaccess（stdin 来自 slice_log_by_time；中文界面用 LANG/LC_ALL）
+# 参数：mode log_file out_mode out_html format_id（combined|npm_proxy|npm_standard）
 # 返回：goaccess 退出码
 goaccess_run_slice() {
   mode="$1"
   log_file="$2"
   out_mode="$3"
   out_html="$4"
-  lang_opt="$5"
-  format_id="$6"
+  format_id="$5"
+
+  _ga_pfx=""
+  if goaccess_wants_zh_ui; then
+    _ga_pfx="LANG=zh_CN.UTF-8 LC_ALL=zh_CN.UTF-8 "
+  fi
 
   set +e
   _ga_rc=1
   case "${format_id}" in
     combined)
       if [ "${out_mode}" = "term" ]; then
-        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format=COMBINED --date-format=%d/%b/%Y --time-format=%H:%M:%S"
-        [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+        ga_cmd="${_ga_pfx}slice_log_by_time ${mode} ${log_file} | goaccess - --log-format=COMBINED --date-format=%d/%b/%Y --time-format=%H:%M:%S"
         show_exec_line "${ga_cmd}"
-        slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+        goaccess_pipe_from_slice "${mode}" "${log_file}" \
           --log-format=COMBINED \
           --date-format=%d/%b/%Y \
-          --time-format=%H:%M:%S \
-          ${lang_opt}
+          --time-format=%H:%M:%S
       else
-        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format=COMBINED --date-format=%d/%b/%Y --time-format=%H:%M:%S --output=${out_html}"
-        [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+        ga_cmd="${_ga_pfx}slice_log_by_time ${mode} ${log_file} | goaccess - --log-format=COMBINED --date-format=%d/%b/%Y --time-format=%H:%M:%S --output=${out_html}"
         show_exec_line "${ga_cmd}"
-        slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+        goaccess_pipe_from_slice "${mode}" "${log_file}" \
           --log-format=COMBINED \
           --date-format=%d/%b/%Y \
           --time-format=%H:%M:%S \
-          --output="${out_html}" \
-          ${lang_opt}
+          --output="${out_html}"
       fi
       _ga_rc=$?
       ;;
     npm_proxy)
       if [ "${out_mode}" = "term" ]; then
-        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S"
-        [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+        ga_cmd="${_ga_pfx}slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S"
         show_exec_line "${ga_cmd}"
-        slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+        goaccess_pipe_from_slice "${mode}" "${log_file}" \
           --log-format="${GOACCESS_NPM_LOG_FORMAT}" \
           --date-format=%d/%b/%Y \
-          --time-format=%H:%M:%S \
-          ${lang_opt}
+          --time-format=%H:%M:%S
       else
-        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S --output=${out_html}"
-        [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+        ga_cmd="${_ga_pfx}slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S --output=${out_html}"
         show_exec_line "${ga_cmd}"
-        slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+        goaccess_pipe_from_slice "${mode}" "${log_file}" \
           --log-format="${GOACCESS_NPM_LOG_FORMAT}" \
           --date-format=%d/%b/%Y \
           --time-format=%H:%M:%S \
-          --output="${out_html}" \
-          ${lang_opt}
+          --output="${out_html}"
       fi
       _ga_rc=$?
       ;;
     npm_standard)
       if [ "${out_mode}" = "term" ]; then
-        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT_ALT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S"
-        [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+        ga_cmd="${_ga_pfx}slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT_ALT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S"
         show_exec_line "${ga_cmd}"
-        slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+        goaccess_pipe_from_slice "${mode}" "${log_file}" \
           --log-format="${GOACCESS_NPM_LOG_FORMAT_ALT}" \
           --date-format=%d/%b/%Y \
-          --time-format=%H:%M:%S \
-          ${lang_opt}
+          --time-format=%H:%M:%S
       else
-        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT_ALT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S --output=${out_html}"
-        [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+        ga_cmd="${_ga_pfx}slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT_ALT}' --date-format=%d/%b/%Y --time-format=%H:%M:%S --output=${out_html}"
         show_exec_line "${ga_cmd}"
-        slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+        goaccess_pipe_from_slice "${mode}" "${log_file}" \
           --log-format="${GOACCESS_NPM_LOG_FORMAT_ALT}" \
           --date-format=%d/%b/%Y \
           --time-format=%H:%M:%S \
-          --output="${out_html}" \
-          ${lang_opt}
+          --output="${out_html}"
       fi
       _ga_rc=$?
       ;;
@@ -690,9 +726,9 @@ goaccess_report() {
   esac
 
   out_html="/tmp/goaccess-report-$(date +%Y%m%d%H%M%S).html"
-  lang_opt="$(build_goaccess_lang_opt)"
-  if [ -z "${lang_opt}" ]; then
-    info "当前 GoAccess 版本不支持中文语言参数，将使用默认语言生成报告。"
+  load_config
+  if goaccess_wants_zh_ui && ! locales_has_zh_cn_utf8; then
+    info "未检测到 zh_CN.UTF-8 locale，GoAccess 可能仍显示英文；可在主菜单「1) 依赖检查与安装」生成中文 locale。"
   fi
 
   if [ -r /dev/tty ]; then
@@ -743,7 +779,7 @@ goaccess_report() {
         *) _ga_label="${fmt}" ;;
       esac
       info "尝试格式：${_ga_label}"
-      goaccess_run_slice "${mode}" "${log_file}" "${out_mode}" "${out_html}" "${lang_opt}" "${fmt}"
+      goaccess_run_slice "${mode}" "${log_file}" "${out_mode}" "${out_html}" "${fmt}"
       ga_ret=$?
       [ "${ga_ret}" -eq 0 ] && break
       _try_last="$(echo "${try_list}" | awk '{print $NF}')"
@@ -752,7 +788,7 @@ goaccess_report() {
     set -e
   else
     set +e
-    goaccess_run_slice "${mode}" "${log_file}" "${out_mode}" "${out_html}" "${lang_opt}" "combined"
+    goaccess_run_slice "${mode}" "${log_file}" "${out_mode}" "${out_html}" "combined"
     ga_ret=$?
     set -e
   fi
