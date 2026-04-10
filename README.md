@@ -159,7 +159,7 @@ ALLOW_PORTS="22,80,443"
 
 `[10/Apr/2026:08:12:49 +0000] - 200 200 - GET https example.com "/api/" [Client 1.2.3.4] [Length 61] ...`
 
-对应 GoAccess 使用 `--date-format=%d/%b/%Y`、`--time-format="%H:%M:%S %z"`，与行首时间戳一致。若你的 NPM 在 `[Gzip …]` / `[Sent-to …]` 段字段数量与默认不同，可改选 **COMBINED** 或自行调整脚本内 `GOACCESS_NPM_LOG_FORMAT`（单引号包裹整段 `log-format`）。
+对应 GoAccess 使用 `--date-format=%d/%b/%Y`、`--time-format="%H:%M:%S %z"`，与行首时间戳一致。脚本内提供 NPM 主格式与兼容格式（单状态码）自动回退；若你的 NPM 在 `[Gzip …]` / `[Sent-to …]` 段字段数量差异更大，可改选 **COMBINED** 或自行调整脚本内 `GOACCESS_NPM_LOG_FORMAT` / `GOACCESS_NPM_LOG_FORMAT_ALT`（单引号包裹整段 `log-format`）。
 
 ---
 

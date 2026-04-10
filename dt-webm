@@ -18,9 +18,12 @@ REPO_RAW_BASE_GITEE="https://gitee.com/coderjia/dt-webm/raw/main"
 REMOTE_DT_WEBM_URL_GITHUB="${REPO_RAW_BASE_GITHUB}/dt-webm"
 REMOTE_DT_WEBM_URL_GITEE="${REPO_RAW_BASE_GITEE}/dt-webm"
 
-# GoAccess：Nginx Proxy Manager 默认 proxy 日志（与 NPM 模板一致）
+# GoAccess：Nginx Proxy Manager proxy 日志（兼容多变体）
 # %v=虚拟主机域名，%h 取自 [Client ...]；整段用单引号赋值，避免 shell 对 [] 与 "" 的错误解析
-GOACCESS_NPM_LOG_FORMAT='[%d:%t] - %s %s - %m %^ %v "%U" [Client %h] [Length %b] %^ %^ %^ %^ "%u" "%R"'
+# PRIMARY: 适配 " - 200 200 - GET https host ... "
+GOACCESS_NPM_LOG_FORMAT='[%d:%t] %^ %s %s %^ %m %^ %v "%U" [Client %h] [Length %b] %^ %^ %^ %^ "%u" "%R"'
+# FALLBACK: 适配 " - 200 - GET https host ... "（单状态码）
+GOACCESS_NPM_LOG_FORMAT_ALT='[%d:%t] %^ %s %^ %m %^ %v "%U" [Client %h] [Length %b] %^ %^ %^ %^ "%u" "%R"'
 
 COLOR_RED='\033[0;31m'
 COLOR_GREEN='\033[0;32m'
@@ -582,6 +585,18 @@ goaccess_report() {
         --time-format="%H:%M:%S %z" \
         ${lang_opt}
       ga_ret=$?
+      if [ "${ga_ret}" -ne 0 ]; then
+        warn "NPM 主格式解析失败，尝试兼容格式（单状态码）。"
+        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT_ALT}' --date-format=%d/%b/%Y --time-format='%H:%M:%S %z'"
+        [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+        show_exec_line "${ga_cmd}"
+        slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+          --log-format="${GOACCESS_NPM_LOG_FORMAT_ALT}" \
+          --date-format=%d/%b/%Y \
+          --time-format="%H:%M:%S %z" \
+          ${lang_opt}
+        ga_ret=$?
+      fi
       set -e
     else
       ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT}' --date-format=%d/%b/%Y --time-format='%H:%M:%S %z' --output=${out_html}"
@@ -595,6 +610,19 @@ goaccess_report() {
         --output="${out_html}" \
         ${lang_opt}
       ga_ret=$?
+      if [ "${ga_ret}" -ne 0 ]; then
+        warn "NPM 主格式解析失败，尝试兼容格式（单状态码）。"
+        ga_cmd="slice_log_by_time ${mode} ${log_file} | goaccess - --log-format='${GOACCESS_NPM_LOG_FORMAT_ALT}' --date-format=%d/%b/%Y --time-format='%H:%M:%S %z' --output=${out_html}"
+        [ -n "${lang_opt}" ] && ga_cmd="${ga_cmd} ${lang_opt}"
+        show_exec_line "${ga_cmd}"
+        slice_log_by_time "${mode}" "${log_file}" | goaccess - \
+          --log-format="${GOACCESS_NPM_LOG_FORMAT_ALT}" \
+          --date-format=%d/%b/%Y \
+          --time-format="%H:%M:%S %z" \
+          --output="${out_html}" \
+          ${lang_opt}
+        ga_ret=$?
+      fi
       set -e
     fi
   else
