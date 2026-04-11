@@ -11,38 +11,7 @@
 
 ## 核心特性
 
-- **环境自适应**
-  - 自动识别 `apt`（Ubuntu/Debian）与 `dnf/yum`（RHEL/CentOS/AlmaLinux/Rocky）
-- **依赖闭环安装**
-  - 自动检查 `goaccess` 与 `crowdsec`
-  - 提供一键逐步安装（含 CrowdSec 仓库、核心组件、`nftables` bouncer）
-- **全局命令注册**
-  - `install` 指令可自动软链接到 `/usr/local/bin/dt-webm`
-  - 提供独立 `install.sh` 一键安装脚本
-- **安全保护**
-  - 自动探测当前 SSH 登录 IP，写入 CrowdSec 白名单（防误封）
-  - 默认防火墙建议放行端口：`22,80,443`
-  - 支持自定义端口白名单（持久化配置）
-  - 使用 `setfacl` 赋予 `crowdsec` 用户日志目录 `rx` 权限，不破坏原有 `chmod`
-- **日志路径智能发现**
-  - 自动扫描 `/var/log/nginx`、`/var/log/httpd`
-  - 失败时可手动输入并保存到配置文件
-- **GoAccess 统计模块**
-  - 强制中文界面：`--language=zh_CN`（版本不支持时自动降级）
-  - 支持 **COMBINED** 与 **Nginx Proxy Manager** 默认 proxy 日志（`%v` 虚拟主机域名、`[Client %h]` 客户端 IP；`log-format` 在脚本内用单引号定义，避免 `[]` 转义问题）
-  - 支持输出方式选择：终端交互查看（按 `q` 退出）或生成静态 HTML
-  - 支持快捷时间切片：过去 1 小时、今天、昨天
-  - 支持自定义时间段：`YYYYMMDD_HHMMSS-YYYYMMDD_HHMMSS`
-  - 时间切片采用 **epoch 严格比较**，并支持按日志时区偏移（如 `+0800`）修正
-- **CrowdSec 安全模块**
-  - 攻击告警查看：`cscli alerts list`
-  - 封禁管理：查看、手动封禁（IP/CIDR 校验）、交互解封
-- **Webhook 告警推送**
-  - 支持钉钉 / 飞书 / Telegram
-  - 支持事件去重与状态缓存，避免重复推送
-  - 支持告警（alerts）与决策（decisions）双通道推送
-- **GeoIP 自动维护**
-  - 支持月度定时更新 `.mmdb` 数据库（需配置 `GEOIP_URL`）
+面向常见 Linux 发行版自动识别 `apt` / `dnf`/`yum`，引导安装 **GoAccess** 与 **CrowdSec**（含仓库与 `nftables` bouncer），并支持 `install` 全局注册与独立 `install.sh`。安全侧含 SSH 来源白名单、可配置放行端口与日志目录 ACL；日志路径可自动发现。GoAccess 支持 COMBINED / NPM 代理日志、终端或静态 HTML、按时间切片与中文语言探测；CrowdSec 提供告警与封禁管理；Webhook 支持多通道与去重推送；GeoIP 可按配置定时更新。
 
 ---
 
@@ -60,8 +29,18 @@
 
 ### 方式一：一键安装（推荐）
 
+与 `install.sh` 内双源一致，任选其一执行（均需 `curl` 与 root/sudo）：
+
+**GitHub Raw（默认）**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/coderjia/dt-webm/main/install.sh | sudo bash
+```
+
+**Gitee Raw（中国大陆网络受限时可选）**
+
+```bash
+curl -fsSL https://gitee.com/coderjia/dt-webm/raw/main/install.sh | sudo bash
 ```
 
 安装器会自动完成：
