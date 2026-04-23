@@ -76,6 +76,8 @@ LOG_DIR=""
 WEBHOOK_TYPE=""
 # Webhook URL
 WEBHOOK_URL=""
+# Webhook 推送间隔（分钟，默认 1440 = 24 小时）
+WEBHOOK_PUSH_INTERVAL_MINUTES="1440"
 # GeoIP 数据库下载地址（支持 DB-IP 或 MaxMind 链接）
 GEOIP_URL=""
 # GoAccess 界面语言：zh_CN/zh 等表示使用简体中文（运行时注入 LANG/LC_ALL=zh_CN.UTF-8，需系统有该 locale）
@@ -110,6 +112,9 @@ ensure_default_config_values() {
   fi
   if ! grep -q '^GOACCESS_LANG=' "${CONFIG_FILE}" 2>/dev/null; then
     echo 'GOACCESS_LANG="zh_CN"' >> "${CONFIG_FILE}"
+  fi
+  if ! grep -q '^WEBHOOK_PUSH_INTERVAL_MINUTES=' "${CONFIG_FILE}" 2>/dev/null; then
+    echo 'WEBHOOK_PUSH_INTERVAL_MINUTES="1440"' >> "${CONFIG_FILE}"
   fi
 }
 
@@ -1064,6 +1069,7 @@ pending_alert_sigs="$(mktemp /tmp/dt-webm-alert-sigs.XXXXXX)"
 pending_alert_lines="$(mktemp /tmp/dt-webm-alert-lines.XXXXXX)"
 pending_decision_sigs="$(mktemp /tmp/dt-webm-decision-sigs.XXXXXX)"
 pending_decision_lines="$(mktemp /tmp/dt-webm-decision-lines.XXXXXX)"
+LAST_RUN_FILE="${STATE_DIR}/webhook-last-run.ts"
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 log() { echo "[$(ts)] $*" >> "${LOG_FILE}"; }
@@ -1072,6 +1078,26 @@ ok() { echo "[成功] $*"; log "[成功] $*"; }
 warn() { echo "[警告] $*"; log "[警告] $*"; }
 
 info "Webhook 任务开始执行。"
+
+interval_min="${WEBHOOK_PUSH_INTERVAL_MINUTES:-1440}"
+if ! echo "${interval_min}" | grep -Eq '^[0-9]+$' || [ "${interval_min}" -lt 1 ]; then
+  warn "WEBHOOK_PUSH_INTERVAL_MINUTES 配置非法：${interval_min}，已回退为 1440。"
+  interval_min=1440
+fi
+now_ts="$(date +%s)"
+last_ts="0"
+[ -f "${LAST_RUN_FILE}" ] && last_ts="$(cat "${LAST_RUN_FILE}" 2>/dev/null || echo 0)"
+if ! echo "${last_ts}" | grep -Eq '^[0-9]+$'; then
+  last_ts=0
+fi
+elapsed_min=$(( (now_ts - last_ts) / 60 ))
+if [ "${last_ts}" -gt 0 ] && [ "${elapsed_min}" -lt "${interval_min}" ]; then
+  info "距离上次推送仅 ${elapsed_min} 分钟，未达到 ${interval_min} 分钟阈值，跳过本次执行。"
+  rm -f "${pending_alert_sigs}" "${pending_alert_lines}" "${pending_decision_sigs}" "${pending_decision_lines}" >/dev/null 2>&1 || true
+  exit 0
+fi
+echo "${now_ts}" > "${LAST_RUN_FILE}"
+info "推送间隔检查通过：${interval_min} 分钟。"
 
 if command -v flock >/dev/null 2>&1; then
   exec 9>"${LOCK_FILE}"
@@ -1282,14 +1308,16 @@ EOF
 }
 
 setup_alert_push_cron() {
+  load_config
+  interval_min="${WEBHOOK_PUSH_INTERVAL_MINUTES:-1440}"
   install_webhook_script
   tmpc="/tmp/dt-webm-cron-$$.txt"
-  show_exec_line "crontab（写入）*/5 * * * * ${WEBHOOK_SCRIPT} ${CRON_ALERT_MARK}"
+  show_exec_line "crontab（写入）* * * * * ${WEBHOOK_SCRIPT} ${CRON_ALERT_MARK}（实际推送间隔由 WEBHOOK_PUSH_INTERVAL_MINUTES=${interval_min} 控制）"
   crontab -l 2>/dev/null | grep -v "${CRON_ALERT_MARK}" > "${tmpc}" || true
-  echo "*/5 * * * * ${WEBHOOK_SCRIPT} ${CRON_ALERT_MARK}" >> "${tmpc}"
+  echo "* * * * * ${WEBHOOK_SCRIPT} ${CRON_ALERT_MARK}" >> "${tmpc}"
   crontab "${tmpc}"
   rm -f "${tmpc}"
-  ok "已配置告警推送定时任务（每 5 分钟检查一次）。"
+  ok "已配置告警推送定时任务（每 1 分钟触发，默认每 ${interval_min} 分钟真正推送一次）。"
 }
 
 update_geoip_db() {

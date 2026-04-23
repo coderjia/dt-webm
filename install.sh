@@ -121,6 +121,8 @@ LOG_DIR=""
 WEBHOOK_TYPE=""
 # Webhook URL（钉钉/飞书/Telegram Bot API）
 WEBHOOK_URL=""
+# Webhook 推送间隔（分钟，默认 1440 = 24 小时）
+WEBHOOK_PUSH_INTERVAL_MINUTES="1440"
 # GeoIP 数据库下载地址（DB-IP 或 MaxMind 直链）
 GEOIP_URL=""
 # GoAccess 语言（默认 zh_CN，可按本机支持调整为 zh）
@@ -135,6 +137,9 @@ EOF
     fi
     if ! grep -q '^GOACCESS_LANG=' "${CONFIG_FILE}" 2>/dev/null; then
       echo 'GOACCESS_LANG="zh_CN"' >> "${CONFIG_FILE}"
+    fi
+    if ! grep -q '^WEBHOOK_PUSH_INTERVAL_MINUTES=' "${CONFIG_FILE}" 2>/dev/null; then
+      echo 'WEBHOOK_PUSH_INTERVAL_MINUTES="1440"' >> "${CONFIG_FILE}"
     fi
     ok "配置文件已存在，已完成兼容性检查。"
   fi
