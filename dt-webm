@@ -1085,21 +1085,60 @@ info "拉取数据完成：alerts=${alerts_total}, decisions=${decisions_total}"
 
 send_msg() {
   msg="$1"
+  resp_file="$(mktemp /tmp/dt-webm-webhook-resp.XXXXXX)"
+  http_code=""
+  send_ok=0
+
   case "${WEBHOOK_TYPE:-}" in
     dingtalk|feishu)
-      curl -sS -X POST "${WEBHOOK_URL}" \
+      http_code="$(curl -sS -o "${resp_file}" -w '%{http_code}' -X POST "${WEBHOOK_URL}" \
         -H 'Content-Type: application/json' \
-        -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"${msg}\"}}" >/dev/null
+        -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"${msg}\"}}" || true)"
       ;;
     telegram)
-      curl -sS -X POST "${WEBHOOK_URL}" \
+      http_code="$(curl -sS -o "${resp_file}" -w '%{http_code}' -X POST "${WEBHOOK_URL}" \
         -H 'Content-Type: application/json' \
-        -d "{\"text\":\"${msg}\"}" >/dev/null
+        -d "{\"text\":\"${msg}\"}" || true)"
       ;;
     *)
+      rm -f "${resp_file}" >/dev/null 2>&1 || true
       return 0
       ;;
   esac
+
+  resp_body="$(tr -d '\r\n' < "${resp_file}" 2>/dev/null || true)"
+  [ -z "${resp_body}" ] && resp_body="(empty)"
+  if [ "${WEBHOOK_TYPE:-}" = "dingtalk" ]; then
+    # 钉钉成功通常为 {"errcode":0,"errmsg":"ok"}
+    errcode="$(echo "${resp_body}" | jq -r '.errcode // empty' 2>/dev/null || true)"
+    if [ "${http_code}" = "200" ] && [ "${errcode}" = "0" ]; then
+      send_ok=1
+    fi
+    log "[调试] 钉钉响应 http=${http_code} errcode=${errcode:-unknown} body=${resp_body}"
+  elif [ "${WEBHOOK_TYPE:-}" = "feishu" ]; then
+    # 飞书成功常见 code/statusCode 为 0
+    code="$(echo "${resp_body}" | jq -r '.code // .StatusCode // .statusCode // empty' 2>/dev/null || true)"
+    if [ "${http_code}" = "200" ] && [ "${code}" = "0" ]; then
+      send_ok=1
+    fi
+    log "[调试] 飞书响应 http=${http_code} code=${code:-unknown} body=${resp_body}"
+  elif [ "${WEBHOOK_TYPE:-}" = "telegram" ]; then
+    # Telegram Bot API 成功通常 ok=true
+    tg_ok="$(echo "${resp_body}" | jq -r '.ok // empty' 2>/dev/null || true)"
+    if [ "${http_code}" = "200" ] && [ "${tg_ok}" = "true" ]; then
+      send_ok=1
+    fi
+    log "[调试] Telegram响应 http=${http_code} ok=${tg_ok:-unknown} body=${resp_body}"
+  fi
+
+  rm -f "${resp_file}" >/dev/null 2>&1 || true
+
+  if [ "${send_ok}" -eq 1 ]; then
+    return 0
+  fi
+
+  warn "Webhook 推送失败：type=${WEBHOOK_TYPE:-unknown}, http=${http_code:-unknown}"
+  return 1
 }
 
 is_sent() {
