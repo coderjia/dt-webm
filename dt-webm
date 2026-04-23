@@ -1060,6 +1060,10 @@ LOG_FILE="${STATE_DIR}/webhook.log"
 mkdir -p "${STATE_DIR}"
 touch "${STATE_FILE}"
 touch "${LOG_FILE}"
+pending_alert_sigs="$(mktemp /tmp/dt-webm-alert-sigs.XXXXXX)"
+pending_alert_lines="$(mktemp /tmp/dt-webm-alert-lines.XXXXXX)"
+pending_decision_sigs="$(mktemp /tmp/dt-webm-decision-sigs.XXXXXX)"
+pending_decision_lines="$(mktemp /tmp/dt-webm-decision-lines.XXXXXX)"
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 log() { echo "[$(ts)] $*" >> "${LOG_FILE}"; }
@@ -1090,7 +1094,12 @@ send_msg() {
   send_ok=0
 
   case "${WEBHOOK_TYPE:-}" in
-    dingtalk|feishu)
+    dingtalk)
+      http_code="$(curl -sS -o "${resp_file}" -w '%{http_code}' -X POST "${WEBHOOK_URL}" \
+        -H 'Content-Type: application/json' \
+        -d "{\"msgtype\":\"text\",\"text\":{\"content\":\"${msg}\"}}" || true)"
+      ;;
+    feishu)
       http_code="$(curl -sS -o "${resp_file}" -w '%{http_code}' -X POST "${WEBHOOK_URL}" \
         -H 'Content-Type: application/json' \
         -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"${msg}\"}}" || true)"
@@ -1153,22 +1162,31 @@ mark_sent() {
 
 sent_count=0
 skip_count=0
+alert_new_count=0
+decision_new_count=0
 
 # 仅推送未发送过的最新 20 条告警
 while IFS='|' read -r kind aid ip reason start_at country; do
   sig="${kind}|${aid}|${ip}|${reason}|${start_at}"
   if ! is_sent "${sig}"; then
-    msg="CrowdSec 告警
+    if [ "${WEBHOOK_TYPE:-}" = "dingtalk" ]; then
+      alert_new_count=$((alert_new_count + 1))
+      echo "${sig}" >> "${pending_alert_sigs}"
+      echo "- ${ip} | ${reason} | ${start_at}" >> "${pending_alert_lines}"
+      log "[聚合] 告警待发送：${sig}"
+    else
+      msg="CrowdSec 告警
 IP: ${ip}
 地区: ${country}
 原因: ${reason}
 时间: ${start_at}"
-    if send_msg "${msg}"; then
-      mark_sent "${sig}"
-      sent_count=$((sent_count + 1))
-      ok "告警已推送：IP=${ip} 场景=${reason}"
-    else
-      warn "告警推送失败：IP=${ip} 场景=${reason}"
+      if send_msg "${msg}"; then
+        mark_sent "${sig}"
+        sent_count=$((sent_count + 1))
+        ok "告警已推送：IP=${ip} 场景=${reason}"
+      else
+        warn "告警推送失败：IP=${ip} 场景=${reason}"
+      fi
     fi
   else
     skip_count=$((skip_count + 1))
@@ -1185,17 +1203,24 @@ done < <(
 while IFS='|' read -r kind did value scenario created_at dtype; do
   sig="${kind}|${did}|${value}|${scenario}|${created_at}"
   if ! is_sent "${sig}"; then
-    msg="CrowdSec 决策
+    if [ "${WEBHOOK_TYPE:-}" = "dingtalk" ]; then
+      decision_new_count=$((decision_new_count + 1))
+      echo "${sig}" >> "${pending_decision_sigs}"
+      echo "- ${value} | ${scenario} | ${created_at}" >> "${pending_decision_lines}"
+      log "[聚合] 决策待发送：${sig}"
+    else
+      msg="CrowdSec 决策
 目标: ${value}
 类型: ${dtype}
 来源: ${scenario}
 时间: ${created_at}"
-    if send_msg "${msg}"; then
-      mark_sent "${sig}"
-      sent_count=$((sent_count + 1))
-      ok "决策已推送：目标=${value} 来源=${scenario}"
-    else
-      warn "决策推送失败：目标=${value} 来源=${scenario}"
+      if send_msg "${msg}"; then
+        mark_sent "${sig}"
+        sent_count=$((sent_count + 1))
+        ok "决策已推送：目标=${value} 来源=${scenario}"
+      else
+        warn "决策推送失败：目标=${value} 来源=${scenario}"
+      fi
     fi
   else
     skip_count=$((skip_count + 1))
@@ -1208,8 +1233,48 @@ done < <(
   ' | tail -n 20
 )
 
+# 钉钉自动聚合摘要：每轮最多 2 条消息（告警摘要 + 决策摘要），避免 660026 限流
+if [ "${WEBHOOK_TYPE:-}" = "dingtalk" ]; then
+  if [ "${alert_new_count}" -gt 0 ]; then
+    alert_preview="$(head -n 10 "${pending_alert_lines}" 2>/dev/null || true)"
+    alert_msg="CrowdSec 告警摘要
+时间: $(ts)
+本轮新增: ${alert_new_count} 条
+示例(最多10条):
+${alert_preview}"
+    if send_msg "${alert_msg}"; then
+      while IFS= read -r sig; do
+        [ -n "${sig}" ] && mark_sent "${sig}"
+      done < "${pending_alert_sigs}"
+      sent_count=$((sent_count + alert_new_count))
+      ok "钉钉告警摘要已推送：本轮 ${alert_new_count} 条。"
+    else
+      warn "钉钉告警摘要推送失败：本轮 ${alert_new_count} 条未标记已发送。"
+    fi
+  fi
+
+  if [ "${decision_new_count}" -gt 0 ]; then
+    decision_preview="$(head -n 10 "${pending_decision_lines}" 2>/dev/null || true)"
+    decision_msg="CrowdSec 决策摘要
+时间: $(ts)
+本轮新增: ${decision_new_count} 条
+示例(最多10条):
+${decision_preview}"
+    if send_msg "${decision_msg}"; then
+      while IFS= read -r sig; do
+        [ -n "${sig}" ] && mark_sent "${sig}"
+      done < "${pending_decision_sigs}"
+      sent_count=$((sent_count + decision_new_count))
+      ok "钉钉决策摘要已推送：本轮 ${decision_new_count} 条。"
+    else
+      warn "钉钉决策摘要推送失败：本轮 ${decision_new_count} 条未标记已发送。"
+    fi
+  fi
+fi
+
 # 保留最近 2000 条，避免状态文件无限增长
 tail -n 2000 "${STATE_FILE}" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "${STATE_FILE}"
+rm -f "${pending_alert_sigs}" "${pending_alert_lines}" "${pending_decision_sigs}" "${pending_decision_lines}" >/dev/null 2>&1 || true
 ok "执行结束：新增推送=${sent_count}，去重跳过=${skip_count}，日志=${LOG_FILE}"
 EOF
   show_exec_line "chmod +x ${WEBHOOK_SCRIPT}"
