@@ -1237,10 +1237,10 @@ done < <(
 if [ "${WEBHOOK_TYPE:-}" = "dingtalk" ]; then
   if [ "${alert_new_count}" -gt 0 ]; then
     alert_preview="$(head -n 10 "${pending_alert_lines}" 2>/dev/null || true)"
-    alert_msg="CrowdSec 告警摘要
+    alert_msg="服务器安全通报(CrowdSec)
 时间: $(ts)
 本轮新增: ${alert_new_count} 条
-示例(最多10条):
+前10条告警(服务器查看更多):
 ${alert_preview}"
     if send_msg "${alert_msg}"; then
       while IFS= read -r sig; do
@@ -1258,7 +1258,7 @@ ${alert_preview}"
     decision_msg="CrowdSec 决策摘要
 时间: $(ts)
 本轮新增: ${decision_new_count} 条
-示例(最多10条):
+前10条告警(服务器查看更多):
 ${decision_preview}"
     if send_msg "${decision_msg}"; then
       while IFS= read -r sig; do
