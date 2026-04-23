@@ -1053,19 +1053,35 @@ CONFIG_FILE="/etc/dt-webm/config.conf"
 STATE_DIR="/var/lib/dt-webm"
 STATE_FILE="${STATE_DIR}/webhook-state.db"
 LOCK_FILE="${STATE_DIR}/webhook-state.lock"
+LOG_FILE="${STATE_DIR}/webhook.log"
 [ -f "${CONFIG_FILE}" ] || exit 0
 . "${CONFIG_FILE}" || true
 [ -n "${WEBHOOK_URL:-}" ] || exit 0
 mkdir -p "${STATE_DIR}"
 touch "${STATE_FILE}"
+touch "${LOG_FILE}"
+
+ts() { date '+%Y-%m-%d %H:%M:%S'; }
+log() { echo "[$(ts)] $*" >> "${LOG_FILE}"; }
+info() { echo "[提示] $*"; log "[提示] $*"; }
+ok() { echo "[成功] $*"; log "[成功] $*"; }
+warn() { echo "[警告] $*"; log "[警告] $*"; }
+
+info "Webhook 任务开始执行。"
 
 if command -v flock >/dev/null 2>&1; then
   exec 9>"${LOCK_FILE}"
-  flock -n 9 || exit 0
+  if ! flock -n 9; then
+    warn "检测到并发任务，已跳过本次执行。"
+    exit 0
+  fi
 fi
 
 ALERTS="$(cscli alerts list -o json 2>/dev/null || echo '[]')"
 DECISIONS="$(cscli decisions list -o json 2>/dev/null || echo '[]')"
+alerts_total="$(echo "${ALERTS}" | jq 'length' 2>/dev/null || echo 0)"
+decisions_total="$(echo "${DECISIONS}" | jq 'length' 2>/dev/null || echo 0)"
+info "拉取数据完成：alerts=${alerts_total}, decisions=${decisions_total}"
 
 send_msg() {
   msg="$1"
@@ -1073,12 +1089,12 @@ send_msg() {
     dingtalk|feishu)
       curl -sS -X POST "${WEBHOOK_URL}" \
         -H 'Content-Type: application/json' \
-        -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"${msg}\"}}" >/dev/null || true
+        -d "{\"msg_type\":\"text\",\"content\":{\"text\":\"${msg}\"}}" >/dev/null
       ;;
     telegram)
       curl -sS -X POST "${WEBHOOK_URL}" \
         -H 'Content-Type: application/json' \
-        -d "{\"text\":\"${msg}\"}" >/dev/null || true
+        -d "{\"text\":\"${msg}\"}" >/dev/null
       ;;
     *)
       return 0
@@ -1096,11 +1112,11 @@ mark_sent() {
   echo "${sig}" >> "${STATE_FILE}"
 }
 
+sent_count=0
+skip_count=0
+
 # 仅推送未发送过的最新 20 条告警
-echo "${ALERTS}" | jq -r '
-  .[]? |
-  "alert|\(.id // "na")|\(.source.ip // "unknown")|\(.scenario // "unknown")|\(.start_at // "na")|\(.country // "unknown")"
-' | tail -n 20 | while IFS='|' read -r kind aid ip reason start_at country; do
+while IFS='|' read -r kind aid ip reason start_at country; do
   sig="${kind}|${aid}|${ip}|${reason}|${start_at}"
   if ! is_sent "${sig}"; then
     msg="CrowdSec 告警
@@ -1108,16 +1124,26 @@ IP: ${ip}
 地区: ${country}
 原因: ${reason}
 时间: ${start_at}"
-    send_msg "${msg}"
-    mark_sent "${sig}"
+    if send_msg "${msg}"; then
+      mark_sent "${sig}"
+      sent_count=$((sent_count + 1))
+      ok "告警已推送：IP=${ip} 场景=${reason}"
+    else
+      warn "告警推送失败：IP=${ip} 场景=${reason}"
+    fi
+  else
+    skip_count=$((skip_count + 1))
+    log "[跳过] 告警已推送过：${sig}"
   fi
-done
+done < <(
+  echo "${ALERTS}" | jq -r '
+    .[]? |
+    "alert|\(.id // "na")|\(.source.ip // "unknown")|\(.scenario // "unknown")|\(.start_at // "na")|\(.country // "unknown")"
+  ' | tail -n 20
+)
 
 # 仅推送未发送过的最新 20 条决策
-echo "${DECISIONS}" | jq -r '
-  .[]? |
-  "decision|\(.id // "na")|\(.value // "unknown")|\(.scenario // "manual")|\(.created_at // "na")|\(.type // "unknown")"
-' | tail -n 20 | while IFS='|' read -r kind did value scenario created_at dtype; do
+while IFS='|' read -r kind did value scenario created_at dtype; do
   sig="${kind}|${did}|${value}|${scenario}|${created_at}"
   if ! is_sent "${sig}"; then
     msg="CrowdSec 决策
@@ -1125,13 +1151,27 @@ echo "${DECISIONS}" | jq -r '
 类型: ${dtype}
 来源: ${scenario}
 时间: ${created_at}"
-    send_msg "${msg}"
-    mark_sent "${sig}"
+    if send_msg "${msg}"; then
+      mark_sent "${sig}"
+      sent_count=$((sent_count + 1))
+      ok "决策已推送：目标=${value} 来源=${scenario}"
+    else
+      warn "决策推送失败：目标=${value} 来源=${scenario}"
+    fi
+  else
+    skip_count=$((skip_count + 1))
+    log "[跳过] 决策已推送过：${sig}"
   fi
-done
+done < <(
+  echo "${DECISIONS}" | jq -r '
+    .[]? |
+    "decision|\(.id // "na")|\(.value // "unknown")|\(.scenario // "manual")|\(.created_at // "na")|\(.type // "unknown")"
+  ' | tail -n 20
+)
 
 # 保留最近 2000 条，避免状态文件无限增长
 tail -n 2000 "${STATE_FILE}" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "${STATE_FILE}"
+ok "执行结束：新增推送=${sent_count}，去重跳过=${skip_count}，日志=${LOG_FILE}"
 EOF
   show_exec_line "chmod +x ${WEBHOOK_SCRIPT}"
   chmod +x "${WEBHOOK_SCRIPT}"
