@@ -1188,6 +1188,9 @@ country_code_to_zh() {
     GB) echo "英国" ;;
     RU) echo "俄罗斯" ;;
     IN) echo "印度" ;;
+    PK) echo "巴基斯坦" ;;
+    PL) echo "波兰" ;;
+    BG) echo "保加利亚" ;;
     BR) echo "巴西" ;;
     CA) echo "加拿大" ;;
     AU) echo "澳大利亚" ;;
@@ -1539,7 +1542,7 @@ ${alert_preview}"
   if [ "${decision_new_count}" -gt 0 ]; then
     decision_preview="$(head -n "${preview_limit}" "${pending_decision_lines}" 2>/dev/null || true)"
     cst_now="$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')"
-    decision_msg="CrowdSec 决策摘要
+    decision_msg="服务器安全决策(CrowdSec)
 时间(东八区): ${cst_now}
 本轮新增: ${decision_new_count} 条
 前${preview_limit}条决策(服务器查看更多):
