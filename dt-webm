@@ -78,6 +78,8 @@ WEBHOOK_TYPE=""
 WEBHOOK_URL=""
 # Webhook 推送间隔（分钟，默认 1440 = 24 小时）
 WEBHOOK_PUSH_INTERVAL_MINUTES="1440"
+# Webhook 聚合消息明细条数（默认 10）
+WEBHOOK_PREVIEW_LIMIT="10"
 # GeoIP 数据库下载地址（支持 DB-IP 或 MaxMind 链接）
 GEOIP_URL=""
 # GoAccess 界面语言：zh_CN/zh 等表示使用简体中文（运行时注入 LANG/LC_ALL=zh_CN.UTF-8，需系统有该 locale）
@@ -115,6 +117,9 @@ ensure_default_config_values() {
   fi
   if ! grep -q '^WEBHOOK_PUSH_INTERVAL_MINUTES=' "${CONFIG_FILE}" 2>/dev/null; then
     echo 'WEBHOOK_PUSH_INTERVAL_MINUTES="1440"' >> "${CONFIG_FILE}"
+  fi
+  if ! grep -q '^WEBHOOK_PREVIEW_LIMIT=' "${CONFIG_FILE}" 2>/dev/null; then
+    echo 'WEBHOOK_PREVIEW_LIMIT="10"' >> "${CONFIG_FILE}"
   fi
 }
 
@@ -1132,6 +1137,11 @@ if ! echo "${interval_min}" | grep -Eq '^[0-9]+$' || [ "${interval_min}" -lt 1 ]
   warn "WEBHOOK_PUSH_INTERVAL_MINUTES 配置非法：${interval_min}，已回退为 1440。"
   interval_min=1440
 fi
+preview_limit="${WEBHOOK_PREVIEW_LIMIT:-10}"
+if ! echo "${preview_limit}" | grep -Eq '^[0-9]+$' || [ "${preview_limit}" -lt 1 ]; then
+  warn "WEBHOOK_PREVIEW_LIMIT 配置非法：${preview_limit}，已回退为 10。"
+  preview_limit=10
+fi
 now_ts="$(date +%s)"
 last_ts="0"
 [ -f "${LAST_RUN_FILE}" ] && last_ts="$(cat "${LAST_RUN_FILE}" 2>/dev/null || echo 0)"
@@ -1331,12 +1341,12 @@ done < <(
 # 钉钉自动聚合摘要：每轮最多 2 条消息（告警摘要 + 决策摘要），避免 660026 限流
 if [ "${WEBHOOK_TYPE:-}" = "dingtalk" ]; then
   if [ "${alert_new_count}" -gt 0 ]; then
-    alert_preview="$(head -n 10 "${pending_alert_lines}" 2>/dev/null || true)"
+    alert_preview="$(head -n "${preview_limit}" "${pending_alert_lines}" 2>/dev/null || true)"
     cst_now="$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')"
     alert_msg="服务器安全通报(CrowdSec)
 时间(东八区): ${cst_now}
 本轮新增: ${alert_new_count} 条
-前10条告警(服务器查看更多):
+前${preview_limit}条告警(服务器查看更多):
 ${alert_preview}"
     if send_msg "${alert_msg}"; then
       while IFS= read -r sig; do
@@ -1350,12 +1360,12 @@ ${alert_preview}"
   fi
 
   if [ "${decision_new_count}" -gt 0 ]; then
-    decision_preview="$(head -n 10 "${pending_decision_lines}" 2>/dev/null || true)"
+    decision_preview="$(head -n "${preview_limit}" "${pending_decision_lines}" 2>/dev/null || true)"
     cst_now="$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')"
     decision_msg="CrowdSec 决策摘要
 时间(东八区): ${cst_now}
 本轮新增: ${decision_new_count} 条
-前10条决策(服务器查看更多):
+前${preview_limit}条决策(服务器查看更多):
 ${decision_preview}"
     if send_msg "${decision_msg}"; then
       while IFS= read -r sig; do
