@@ -1173,6 +1173,48 @@ translate_scenario() {
   esac
 }
 
+normalize_geo() {
+  in_country="$1"
+  in_city="$2"
+  in_cn="$3"
+  in_asn="$4"
+  in_lat="$5"
+  in_lon="$6"
+
+  country="${in_country}"
+  city="${in_city}"
+
+  [ -z "${country}" ] || [ "${country}" = "unknown" ] && country="${in_cn}"
+  [ -z "${country}" ] && country="unknown"
+
+  if [ -z "${city}" ] || [ "${city}" = "unknown" ]; then
+    if [ -n "${in_asn}" ] && [ "${in_asn}" != "unknown" ] && [ "${in_asn}" != "null" ]; then
+      city="${in_asn}"
+    elif [ -n "${in_lat}" ] && [ -n "${in_lon}" ] && [ "${in_lat}" != "null" ] && [ "${in_lon}" != "null" ]; then
+      city="${in_lat},${in_lon}"
+    else
+      city="unknown"
+    fi
+  fi
+
+  echo "${country}|${city}"
+}
+
+geo_from_alerts_by_ip() {
+  ip="$1"
+  echo "${ALERTS}" | jq -r --arg ip "${ip}" '
+    first(
+      .[]? | select((.source.ip // .source.value // "") == $ip) |
+      [(.country // "unknown"),
+       (.city // "unknown"),
+       (.source.cn // "unknown"),
+       (.source.as_name // "unknown"),
+       ((.source.latitude // "unknown")|tostring),
+       ((.source.longitude // "unknown")|tostring)] | @tsv
+    ) // "unknown\tunknown\tunknown\tunknown\tunknown\tunknown"
+  ' 2>/dev/null || echo "unknown	unknown	unknown	unknown	unknown	unknown"
+}
+
 info "Webhook 任务开始执行。"
 info "运行参数：force=${FORCE_PUSH}, include_sent=${INCLUDE_SENT}"
 
@@ -1299,7 +1341,7 @@ alert_new_count=0
 decision_new_count=0
 
 # 仅推送未发送过的最新 20 条告警
-while IFS='|' read -r kind aid ip reason start_at country city; do
+while IFS='|' read -r kind aid ip reason start_at country city source_cn source_asn source_lat source_lon; do
   sig="${kind}|${aid}|${ip}|${reason}|${start_at}"
   already_sent=0
   is_sent "${sig}" && already_sent=1
@@ -1312,8 +1354,9 @@ while IFS='|' read -r kind aid ip reason start_at country city; do
       echo "${sig}" >> "${pending_alert_sigs}"
       reason_cn="$(translate_scenario "${reason}")"
       cst_time="$(to_cst "${start_at}")"
-      [ -z "${country}" ] && country="unknown"
-      [ -z "${city}" ] && city="unknown"
+      geo_norm="$(normalize_geo "${country}" "${city}" "${source_cn}" "${source_asn}" "${source_lat}" "${source_lon}")"
+      country="$(echo "${geo_norm}" | cut -d'|' -f1)"
+      city="$(echo "${geo_norm}" | cut -d'|' -f2)"
       echo "- ${ip} | ${country}/${city} | ${reason_cn} | ${cst_time}" >> "${pending_alert_lines}"
       log "[聚合] 告警待发送：${sig}"
     else
@@ -1337,7 +1380,7 @@ IP: ${ip}
 done < <(
   echo "${ALERTS}" | jq -r '
     .[]? |
-    "alert|\(.id // "na")|\(.source.ip // "unknown")|\(.scenario // "unknown")|\(.start_at // "na")|\(.country // "unknown")|\(.city // "unknown")"
+    "alert|\(.id // "na")|\(.source.ip // "unknown")|\(.scenario // "unknown")|\(.start_at // "na")|\(.country // "unknown")|\(.city // "unknown")|\(.source.cn // "unknown")|\(.source.as_name // "unknown")|\((.source.latitude // "unknown")|tostring)|\((.source.longitude // "unknown")|tostring)"
   ' | tail -n 20
 )
 
@@ -1355,7 +1398,17 @@ while IFS='|' read -r kind did value scenario created_at dtype; do
       echo "${sig}" >> "${pending_decision_sigs}"
       scenario_cn="$(translate_scenario "${scenario}")"
       cst_time="$(to_cst "${created_at}")"
-      echo "- ${value} | ${scenario_cn} | ${cst_time}" >> "${pending_decision_lines}"
+      geo_tsv="$(geo_from_alerts_by_ip "${value}")"
+      country="$(echo "${geo_tsv}" | awk -F '\t' '{print $1}')"
+      city="$(echo "${geo_tsv}" | awk -F '\t' '{print $2}')"
+      source_cn="$(echo "${geo_tsv}" | awk -F '\t' '{print $3}')"
+      source_asn="$(echo "${geo_tsv}" | awk -F '\t' '{print $4}')"
+      source_lat="$(echo "${geo_tsv}" | awk -F '\t' '{print $5}')"
+      source_lon="$(echo "${geo_tsv}" | awk -F '\t' '{print $6}')"
+      geo_norm="$(normalize_geo "${country}" "${city}" "${source_cn}" "${source_asn}" "${source_lat}" "${source_lon}")"
+      country="$(echo "${geo_norm}" | cut -d'|' -f1)"
+      city="$(echo "${geo_norm}" | cut -d'|' -f2)"
+      echo "- ${value} | ${country}/${city} | ${scenario_cn} | ${cst_time}" >> "${pending_decision_lines}"
       log "[聚合] 决策待发送：${sig}"
     else
       msg="CrowdSec 决策
