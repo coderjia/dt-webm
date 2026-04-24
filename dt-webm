@@ -1279,6 +1279,7 @@ country_code_to_zh() {
     DE) echo "德国" ;;
     FR) echo "法国" ;;
     GB) echo "英国" ;;
+    ES) echo "西班牙" ;;
     RU) echo "俄罗斯" ;;
     IN) echo "印度" ;;
     PK) echo "巴基斯坦" ;;
