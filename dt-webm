@@ -1134,6 +1134,29 @@ human_seconds() {
   echo "${out}"
 }
 
+duration_to_seconds() {
+  d="$1"
+  [ -n "${d}" ] || { echo ""; return; }
+  echo "${d}" | grep -Eq '^[0-9]+([smhd][0-9]*)*[smhd]$|^[0-9]+[smhd]([0-9]+[smhd])*$' || { echo ""; return; }
+  # 解析形如 3h4m59s / 2d3h / 45m
+  awk -v str="${d}" '
+    BEGIN{
+      total=0
+      while (match(str, /[0-9]+[smhd]/)) {
+        tok=substr(str, RSTART, RLENGTH)
+        num=substr(tok, 1, RLENGTH-1) + 0
+        unit=substr(tok, RLENGTH, 1)
+        if (unit=="s") total += num
+        else if (unit=="m") total += num*60
+        else if (unit=="h") total += num*3600
+        else if (unit=="d") total += num*86400
+        str=substr(str, RSTART+RLENGTH)
+      }
+      print total
+    }
+  '
+}
+
 decision_duration_remaining() {
   created_at="$1"
   duration="$2"
@@ -1167,6 +1190,14 @@ decision_duration_remaining() {
 
   # 没有 until/expires_at 时，降级展示 duration
   if [ -n "${duration}" ] && [ "${duration}" != "unknown" ] && [ "${duration}" != "0s" ]; then
+    created_ts="$(date -d "${created_at}" +%s 2>/dev/null || echo "")"
+    dur_sec="$(duration_to_seconds "${duration}")"
+    if [ -n "${created_ts}" ] && [ -n "${dur_sec}" ] && echo "${created_ts}" | grep -Eq '^[0-9]+$' && echo "${dur_sec}" | grep -Eq '^[0-9]+$'; then
+      remain_sec=$((created_ts + dur_sec - now_ts))
+      remain_human="$(human_seconds "${remain_sec}")"
+      echo "${duration}|${remain_human}"
+      return
+    fi
     echo "${duration}|unknown"
   else
     echo "unknown|unknown"
