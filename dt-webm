@@ -1062,6 +1062,26 @@ LOG_FILE="${STATE_DIR}/webhook.log"
 [ -f "${CONFIG_FILE}" ] || exit 0
 . "${CONFIG_FILE}" || true
 [ -n "${WEBHOOK_URL:-}" ] || exit 0
+
+FORCE_PUSH=0
+INCLUDE_SENT=0
+for arg in "$@"; do
+  case "${arg}" in
+    --force|-f)
+      FORCE_PUSH=1
+      ;;
+    --include-sent|--all)
+      INCLUDE_SENT=1
+      ;;
+    --help|-h)
+      echo "用法: dt-webm-webhook.sh [--force] [--include-sent]"
+      echo "  --force         忽略 WEBHOOK_PUSH_INTERVAL_MINUTES，立即执行推送"
+      echo "  --include-sent  包含已标记为已推送的数据（用于手动重推）"
+      exit 0
+      ;;
+  esac
+done
+
 mkdir -p "${STATE_DIR}"
 touch "${STATE_FILE}"
 touch "${LOG_FILE}"
@@ -1105,6 +1125,7 @@ translate_scenario() {
 }
 
 info "Webhook 任务开始执行。"
+info "运行参数：force=${FORCE_PUSH}, include_sent=${INCLUDE_SENT}"
 
 interval_min="${WEBHOOK_PUSH_INTERVAL_MINUTES:-1440}"
 if ! echo "${interval_min}" | grep -Eq '^[0-9]+$' || [ "${interval_min}" -lt 1 ]; then
@@ -1118,10 +1139,13 @@ if ! echo "${last_ts}" | grep -Eq '^[0-9]+$'; then
   last_ts=0
 fi
 elapsed_min=$(( (now_ts - last_ts) / 60 ))
-if [ "${last_ts}" -gt 0 ] && [ "${elapsed_min}" -lt "${interval_min}" ]; then
+if [ "${FORCE_PUSH}" -ne 1 ] && [ "${last_ts}" -gt 0 ] && [ "${elapsed_min}" -lt "${interval_min}" ]; then
   info "距离上次推送仅 ${elapsed_min} 分钟，未达到 ${interval_min} 分钟阈值，跳过本次执行。"
   rm -f "${pending_alert_sigs}" "${pending_alert_lines}" "${pending_decision_sigs}" "${pending_decision_lines}" >/dev/null 2>&1 || true
   exit 0
+fi
+if [ "${FORCE_PUSH}" -eq 1 ]; then
+  info "已启用强制推送，忽略推送间隔限制。"
 fi
 echo "${now_ts}" > "${LAST_RUN_FILE}"
 info "推送间隔检查通过：${interval_min} 分钟。"
@@ -1210,7 +1234,9 @@ is_sent() {
 
 mark_sent() {
   sig="$1"
-  echo "${sig}" >> "${STATE_FILE}"
+  if ! is_sent "${sig}"; then
+    echo "${sig}" >> "${STATE_FILE}"
+  fi
 }
 
 sent_count=0
@@ -1221,7 +1247,12 @@ decision_new_count=0
 # 仅推送未发送过的最新 20 条告警
 while IFS='|' read -r kind aid ip reason start_at country city; do
   sig="${kind}|${aid}|${ip}|${reason}|${start_at}"
-  if ! is_sent "${sig}"; then
+  already_sent=0
+  is_sent "${sig}" && already_sent=1
+  if [ "${INCLUDE_SENT}" -eq 1 ] || [ "${already_sent}" -eq 0 ]; then
+    if [ "${INCLUDE_SENT}" -eq 1 ] && [ "${already_sent}" -eq 1 ]; then
+      log "[重推] 告警已标记但被强制包含：${sig}"
+    fi
     if [ "${WEBHOOK_TYPE:-}" = "dingtalk" ]; then
       alert_new_count=$((alert_new_count + 1))
       echo "${sig}" >> "${pending_alert_sigs}"
@@ -1259,7 +1290,12 @@ done < <(
 # 仅推送未发送过的最新 20 条决策
 while IFS='|' read -r kind did value scenario created_at dtype; do
   sig="${kind}|${did}|${value}|${scenario}|${created_at}"
-  if ! is_sent "${sig}"; then
+  already_sent=0
+  is_sent "${sig}" && already_sent=1
+  if [ "${INCLUDE_SENT}" -eq 1 ] || [ "${already_sent}" -eq 0 ]; then
+    if [ "${INCLUDE_SENT}" -eq 1 ] && [ "${already_sent}" -eq 1 ]; then
+      log "[重推] 决策已标记但被强制包含：${sig}"
+    fi
     if [ "${WEBHOOK_TYPE:-}" = "dingtalk" ]; then
       decision_new_count=$((decision_new_count + 1))
       echo "${sig}" >> "${pending_decision_sigs}"
