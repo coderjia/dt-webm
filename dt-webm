@@ -1173,7 +1173,71 @@ translate_scenario() {
   esac
 }
 
+country_code_to_zh() {
+  code="$(echo "$1" | tr '[:lower:]' '[:upper:]')"
+  case "${code}" in
+    CN) echo "中国" ;;
+    US) echo "美国" ;;
+    JP) echo "日本" ;;
+    KR) echo "韩国" ;;
+    SG) echo "新加坡" ;;
+    HK) echo "中国香港" ;;
+    TW) echo "中国台湾" ;;
+    DE) echo "德国" ;;
+    FR) echo "法国" ;;
+    GB) echo "英国" ;;
+    RU) echo "俄罗斯" ;;
+    IN) echo "印度" ;;
+    BR) echo "巴西" ;;
+    CA) echo "加拿大" ;;
+    AU) echo "澳大利亚" ;;
+    NL) echo "荷兰" ;;
+    *) echo "${code}" ;;
+  esac
+}
+
+asn_to_zh() {
+  asn_upper="$(echo "$1" | tr '[:lower:]' '[:upper:]')"
+  case "${asn_upper}" in
+    *ALIBABA*|*ALICLOUD*) echo "阿里云" ;;
+    *TENCENT*) echo "腾讯云" ;;
+    *HUAWEI*) echo "华为云" ;;
+    *AMAZON*|*AWS*) echo "亚马逊云" ;;
+    *MICROSOFT*|*AZURE*) echo "微软云" ;;
+    *GOOGLE*|*GCP*) echo "谷歌云" ;;
+    *DIGITALOCEAN*) echo "DigitalOcean" ;;
+    *LINODE*) echo "Linode" ;;
+    *OVH*) echo "OVH" ;;
+    *CLOUDFLARE*) echo "Cloudflare" ;;
+    *AKAMAI*) echo "Akamai" ;;
+    *HETZNER*) echo "Hetzner" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+extract_quoted() {
+  sed -n 's/.*"\(.*\)".*/\1/p' | head -n 1
+}
+
+geo_from_mmdb_zh() {
+  ip="$1"
+  city_mmdb="/var/lib/crowdsec/data/GeoLite2-City.mmdb"
+  [ -n "${ip}" ] || return 1
+  [ -f "${city_mmdb}" ] || return 1
+  command -v mmdblookup >/dev/null 2>&1 || return 1
+
+  c_zh="$(mmdblookup --file "${city_mmdb}" --ip "${ip}" country names zh-CN 2>/dev/null | extract_quoted || true)"
+  city_zh="$(mmdblookup --file "${city_mmdb}" --ip "${ip}" city names zh-CN 2>/dev/null | extract_quoted || true)"
+  if [ -n "${c_zh}" ] || [ -n "${city_zh}" ]; then
+    echo "${c_zh:-unknown}|${city_zh:-unknown}"
+    return 0
+  fi
+  return 1
+}
+
 normalize_geo() {
+  ip="$1"
+  shift
   in_country="$1"
   in_city="$2"
   in_cn="$3"
@@ -1181,15 +1245,31 @@ normalize_geo() {
   in_lat="$5"
   in_lon="$6"
 
-  country="${in_country}"
-  city="${in_city}"
+  # B: 优先通过 mmdblookup 查询中文国家/城市
+  mmdb_geo="$(geo_from_mmdb_zh "${ip}" || true)"
+  mmdb_country="$(echo "${mmdb_geo}" | cut -d'|' -f1)"
+  mmdb_city="$(echo "${mmdb_geo}" | cut -d'|' -f2)"
+  if [ -n "${mmdb_country}" ] && [ "${mmdb_country}" != "unknown" ]; then
+    country="${mmdb_country}"
+  else
+    country="${in_country}"
+  fi
+  if [ -n "${mmdb_city}" ] && [ "${mmdb_city}" != "unknown" ]; then
+    city="${mmdb_city}"
+  else
+    city="${in_city}"
+  fi
 
-  [ -z "${country}" ] || [ "${country}" = "unknown" ] && country="${in_cn}"
+  # A: 无中文结果时，使用国家代码中文映射 + ASN 中文映射回退
+  if [ -z "${country}" ] || [ "${country}" = "unknown" ] || [ "${country}" = "null" ]; then
+    country="${in_cn}"
+    [ -n "${country}" ] && [ "${country}" != "unknown" ] && country="$(country_code_to_zh "${country}")"
+  fi
   [ -z "${country}" ] && country="unknown"
 
-  if [ -z "${city}" ] || [ "${city}" = "unknown" ]; then
+  if [ -z "${city}" ] || [ "${city}" = "unknown" ] || [ "${city}" = "null" ]; then
     if [ -n "${in_asn}" ] && [ "${in_asn}" != "unknown" ] && [ "${in_asn}" != "null" ]; then
-      city="${in_asn}"
+      city="$(asn_to_zh "${in_asn}")"
     elif [ -n "${in_lat}" ] && [ -n "${in_lon}" ] && [ "${in_lat}" != "null" ] && [ "${in_lon}" != "null" ]; then
       city="${in_lat},${in_lon}"
     else
@@ -1354,7 +1434,7 @@ while IFS='|' read -r kind aid ip reason start_at country city source_cn source_
       echo "${sig}" >> "${pending_alert_sigs}"
       reason_cn="$(translate_scenario "${reason}")"
       cst_time="$(to_cst "${start_at}")"
-      geo_norm="$(normalize_geo "${country}" "${city}" "${source_cn}" "${source_asn}" "${source_lat}" "${source_lon}")"
+      geo_norm="$(normalize_geo "${ip}" "${country}" "${city}" "${source_cn}" "${source_asn}" "${source_lat}" "${source_lon}")"
       country="$(echo "${geo_norm}" | cut -d'|' -f1)"
       city="$(echo "${geo_norm}" | cut -d'|' -f2)"
       echo "- ${ip} | ${country}/${city} | ${reason_cn} | ${cst_time}" >> "${pending_alert_lines}"
@@ -1405,7 +1485,7 @@ while IFS='|' read -r kind did value scenario created_at dtype; do
       source_asn="$(echo "${geo_tsv}" | awk -F '\t' '{print $4}')"
       source_lat="$(echo "${geo_tsv}" | awk -F '\t' '{print $5}')"
       source_lon="$(echo "${geo_tsv}" | awk -F '\t' '{print $6}')"
-      geo_norm="$(normalize_geo "${country}" "${city}" "${source_cn}" "${source_asn}" "${source_lat}" "${source_lon}")"
+      geo_norm="$(normalize_geo "${value}" "${country}" "${city}" "${source_cn}" "${source_asn}" "${source_lat}" "${source_lon}")"
       country="$(echo "${geo_norm}" | cut -d'|' -f1)"
       city="$(echo "${geo_norm}" | cut -d'|' -f2)"
       echo "- ${value} | ${country}/${city} | ${scenario_cn} | ${cst_time}" >> "${pending_decision_lines}"
