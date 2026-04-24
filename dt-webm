@@ -1579,7 +1579,7 @@ while IFS='|' read -r kind did value scenario created_at dtype duration until ex
 done < <(
   echo "${DECISIONS}" | jq -r '
     .[]? |
-    "decision|\(.id // "na")|\(.value // .scope.value // .source.ip // "unknown")|\(.scenario // "manual")|\(.created_at // "na")|\(.type // "unknown")|\(.duration // "unknown")|\(.until // "unknown")|\(.expires_at // "unknown")"
+    "decision|\(.id // .decisions[0].id // "na")|\(.decisions[0].value // .value // .scope.value // .source.ip // "unknown")|\(.decisions[0].scenario // .scenario // "manual")|\(.created_at // .start_at // "na")|\(.decisions[0].type // .type // "unknown")|\(.decisions[0].duration // .duration // "unknown")|\(.decisions[0].until // .until // "unknown")|\(.decisions[0].expires_at // .expires_at // "unknown")"
   ' | tail -n 20
 )
 
