@@ -1114,6 +1114,30 @@ to_cst() {
 translate_scenario() {
   s="$1"
   case "${s}" in
+    crowdsecurity/apache_log4j2_cve-2021-44228) echo "Log4j2 漏洞探测（CVE-2021-44228）" ;;
+    crowdsecurity/appsec-generic-test) echo "应用防护通用测试事件" ;;
+    crowdsecurity/appsec-native) echo "应用原生防护事件" ;;
+    crowdsecurity/appsec-vpatch) echo "应用虚拟补丁防护事件" ;;
+    crowdsecurity/CVE-2017-9841) echo "漏洞探测（CVE-2017-9841）" ;;
+    crowdsecurity/CVE-2019-18935) echo "漏洞探测（CVE-2019-18935）" ;;
+    crowdsecurity/CVE-2022-26134) echo "漏洞探测（CVE-2022-26134）" ;;
+    crowdsecurity/CVE-2022-35914) echo "漏洞探测（CVE-2022-35914）" ;;
+    crowdsecurity/CVE-2022-37042) echo "漏洞探测（CVE-2022-37042）" ;;
+    crowdsecurity/CVE-2022-40684) echo "漏洞探测（CVE-2022-40684）" ;;
+    crowdsecurity/CVE-2022-41082) echo "漏洞探测（CVE-2022-41082）" ;;
+    crowdsecurity/CVE-2022-41697) echo "漏洞探测（CVE-2022-41697）" ;;
+    crowdsecurity/CVE-2022-42889) echo "漏洞探测（CVE-2022-42889）" ;;
+    crowdsecurity/CVE-2022-44877) echo "漏洞探测（CVE-2022-44877）" ;;
+    crowdsecurity/CVE-2022-46169) echo "漏洞探测（CVE-2022-46169）" ;;
+    crowdsecurity/CVE-2023-22515) echo "漏洞探测（CVE-2023-22515）" ;;
+    crowdsecurity/CVE-2023-22518) echo "漏洞探测（CVE-2023-22518）" ;;
+    crowdsecurity/CVE-2023-49103) echo "漏洞探测（CVE-2023-49103）" ;;
+    crowdsecurity/CVE-2024-0012) echo "漏洞探测（CVE-2024-0012）" ;;
+    crowdsecurity/CVE-2024-38475) echo "漏洞探测（CVE-2024-38475）" ;;
+    crowdsecurity/CVE-2024-9474) echo "漏洞探测（CVE-2024-9474）" ;;
+    crowdsecurity/f5-big-ip-cve-2020-5902) echo "F5 BIG-IP 漏洞探测（CVE-2020-5902）" ;;
+    crowdsecurity/fortinet-cve-2018-13379) echo "Fortinet 漏洞探测（CVE-2018-13379）" ;;
+    crowdsecurity/grafana-cve-2021-43798) echo "Grafana 漏洞探测（CVE-2021-43798）" ;;
     crowdsecurity/http-probing) echo "HTTP 探测扫描" ;;
     crowdsecurity/http-admin-interface-probing) echo "后台管理接口探测" ;;
     crowdsecurity/http-sensitive-files) echo "敏感文件探测" ;;
@@ -1123,8 +1147,28 @@ translate_scenario() {
     crowdsecurity/http-crawl-non_statics) echo "非常规资源爬取" ;;
     crowdsecurity/http-open-proxy) echo "开放代理探测" ;;
     crowdsecurity/http-bad-user-agent) echo "可疑 User-Agent 访问" ;;
+    crowdsecurity/http-cve-2021-41773) echo "Apache 路径穿越漏洞探测（CVE-2021-41773）" ;;
+    crowdsecurity/http-cve-2021-42013) echo "Apache RCE 漏洞探测（CVE-2021-42013）" ;;
+    crowdsecurity/http-generic-bf) echo "HTTP 通用暴力破解" ;;
+    crowdsecurity/http-generic-test) echo "HTTP 通用测试事件" ;;
+    crowdsecurity/http-path-traversal-probing) echo "路径穿越探测" ;;
+    crowdsecurity/http-sap-interface-probing) echo "SAP 接口探测" ;;
+    crowdsecurity/http-sqli-probing) echo "SQL 注入探测" ;;
+    crowdsecurity/http-xss-probing) echo "XSS 探测" ;;
+    ltsich/http-w00tw00t) echo "w00tw00t 扫描特征命中" ;;
     crowdsecurity/jira_cve-2021-26086) echo "Jira 漏洞探测（CVE-2021-26086）" ;;
     crowdsecurity/netgear_rce) echo "Netgear 远程代码执行探测" ;;
+    crowdsecurity/pulse-secure-sslvpn-cve-2019-11510) echo "Pulse Secure SSLVPN 漏洞探测（CVE-2019-11510）" ;;
+    crowdsecurity/spring4shell_cve-2022-22965) echo "Spring4Shell 漏洞探测（CVE-2022-22965）" ;;
+    crowdsecurity/thinkphp-cve-2018-20062) echo "ThinkPHP 漏洞探测（CVE-2018-20062）" ;;
+    crowdsecurity/vmware-cve-2022-22954) echo "VMware 漏洞探测（CVE-2022-22954）" ;;
+    crowdsecurity/vmware-vcenter-vmsa-2021-0027) echo "VMware vCenter 漏洞探测（VMSA-2021-0027）" ;;
+    crowdsecurity/ssh-bf) echo "SSH 暴力破解" ;;
+    crowdsecurity/ssh-slow-bf) echo "SSH 慢速暴力破解" ;;
+    crowdsecurity/ssh-time-based-bf) echo "SSH 时间型暴力破解" ;;
+    crowdsecurity/ssh-refused-conn) echo "SSH 被拒连接异常" ;;
+    crowdsecurity/ssh-cve-2024-6387) echo "OpenSSH 漏洞探测（CVE-2024-6387）" ;;
+    crowdsecurity/ssh-generic-test) echo "SSH 通用测试事件" ;;
     *) echo "${s}" ;;
   esac
 }
