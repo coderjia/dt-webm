@@ -1111,6 +1111,68 @@ to_cst() {
   TZ=Asia/Shanghai date -d "${utc_ts}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "${utc_ts}"
 }
 
+human_seconds() {
+  sec="$1"
+  if [ -z "${sec}" ] || ! echo "${sec}" | grep -Eq '^-?[0-9]+$'; then
+    echo "unknown"
+    return
+  fi
+  if [ "${sec}" -lt 0 ]; then
+    sec=0
+  fi
+  d=$((sec / 86400))
+  h=$(((sec % 86400) / 3600))
+  m=$(((sec % 3600) / 60))
+  s=$((sec % 60))
+  out=""
+  [ "${d}" -gt 0 ] && out="${out}${d}天"
+  [ "${h}" -gt 0 ] && out="${out}${h}小时"
+  [ "${m}" -gt 0 ] && out="${out}${m}分钟"
+  if [ -z "${out}" ]; then
+    out="${s}秒"
+  fi
+  echo "${out}"
+}
+
+decision_duration_remaining() {
+  created_at="$1"
+  duration="$2"
+  until="$3"
+  expires_at="$4"
+  now_ts="$(date +%s)"
+
+  # 优先使用绝对到期时间计算剩余
+  end_raw="${until}"
+  [ -z "${end_raw}" ] || [ "${end_raw}" = "unknown" ] && end_raw="${expires_at}"
+  if [ -n "${end_raw}" ] && [ "${end_raw}" != "unknown" ]; then
+    end_ts="$(date -d "${end_raw}" +%s 2>/dev/null || echo "")"
+    if [ -n "${end_ts}" ] && echo "${end_ts}" | grep -Eq '^[0-9]+$'; then
+      remain_sec=$((end_ts - now_ts))
+      remain_human="$(human_seconds "${remain_sec}")"
+      # 时长尽量用 duration，没有就由 created_at/end_ts 反推
+      if [ -n "${duration}" ] && [ "${duration}" != "unknown" ] && [ "${duration}" != "0s" ]; then
+        dur_human="${duration}"
+      else
+        created_ts="$(date -d "${created_at}" +%s 2>/dev/null || echo "")"
+        if [ -n "${created_ts}" ] && echo "${created_ts}" | grep -Eq '^[0-9]+$'; then
+          dur_human="$(human_seconds $((end_ts - created_ts)))"
+        else
+          dur_human="unknown"
+        fi
+      fi
+      echo "${dur_human}|${remain_human}"
+      return
+    fi
+  fi
+
+  # 没有 until/expires_at 时，降级展示 duration
+  if [ -n "${duration}" ] && [ "${duration}" != "unknown" ] && [ "${duration}" != "0s" ]; then
+    echo "${duration}|unknown"
+  else
+    echo "unknown|unknown"
+  fi
+}
+
 translate_scenario() {
   s="$1"
   case "${s}" in
@@ -1468,7 +1530,7 @@ done < <(
 )
 
 # 仅推送未发送过的最新 20 条决策
-while IFS='|' read -r kind did value scenario created_at dtype; do
+while IFS='|' read -r kind did value scenario created_at dtype duration until expires_at; do
   sig="${kind}|${did}|${value}|${scenario}|${created_at}"
   already_sent=0
   is_sent "${sig}" && already_sent=1
@@ -1491,7 +1553,10 @@ while IFS='|' read -r kind did value scenario created_at dtype; do
       geo_norm="$(normalize_geo "${value}" "${country}" "${city}" "${source_cn}" "${source_asn}" "${source_lat}" "${source_lon}")"
       country="$(echo "${geo_norm}" | cut -d'|' -f1)"
       city="$(echo "${geo_norm}" | cut -d'|' -f2)"
-      echo "- ${value} | ${country}/${city} | ${scenario_cn} | ${cst_time}" >> "${pending_decision_lines}"
+      dr="$(decision_duration_remaining "${created_at}" "${duration}" "${until}" "${expires_at}")"
+      dur_human="$(echo "${dr}" | cut -d'|' -f1)"
+      remain_human="$(echo "${dr}" | cut -d'|' -f2)"
+      echo "- ${value} | ${country}/${city} | ${scenario_cn} | 时长:${dur_human} | 剩余:${remain_human} | ${cst_time}" >> "${pending_decision_lines}"
       log "[聚合] 决策待发送：${sig}"
     else
       msg="CrowdSec 决策
@@ -1514,7 +1579,7 @@ while IFS='|' read -r kind did value scenario created_at dtype; do
 done < <(
   echo "${DECISIONS}" | jq -r '
     .[]? |
-    "decision|\(.id // "na")|\(.value // .scope.value // .source.ip // "unknown")|\(.scenario // "manual")|\(.created_at // "na")|\(.type // "unknown")"
+    "decision|\(.id // "na")|\(.value // .scope.value // .source.ip // "unknown")|\(.scenario // "manual")|\(.created_at // "na")|\(.type // "unknown")|\(.duration // "unknown")|\(.until // "unknown")|\(.expires_at // "unknown")"
   ' | tail -n 20
 )
 
