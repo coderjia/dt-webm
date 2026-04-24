@@ -1077,6 +1077,33 @@ info() { echo "[提示] $*"; log "[提示] $*"; }
 ok() { echo "[成功] $*"; log "[成功] $*"; }
 warn() { echo "[警告] $*"; log "[警告] $*"; }
 
+to_cst() {
+  utc_ts="$1"
+  if [ -z "${utc_ts}" ] || [ "${utc_ts}" = "na" ] || [ "${utc_ts}" = "unknown" ]; then
+    echo "unknown"
+    return
+  fi
+  TZ=Asia/Shanghai date -d "${utc_ts}" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "${utc_ts}"
+}
+
+translate_scenario() {
+  s="$1"
+  case "${s}" in
+    crowdsecurity/http-probing) echo "HTTP 探测扫描" ;;
+    crowdsecurity/http-admin-interface-probing) echo "后台管理接口探测" ;;
+    crowdsecurity/http-sensitive-files) echo "敏感文件探测" ;;
+    crowdsecurity/http-cve-probing) echo "Web 漏洞探测" ;;
+    crowdsecurity/http-wordpress-scan) echo "WordPress 扫描" ;;
+    crowdsecurity/http-backdoors-attempts) echo "Web 后门路径探测" ;;
+    crowdsecurity/http-crawl-non_statics) echo "非常规资源爬取" ;;
+    crowdsecurity/http-open-proxy) echo "开放代理探测" ;;
+    crowdsecurity/http-bad-user-agent) echo "可疑 User-Agent 访问" ;;
+    crowdsecurity/jira_cve-2021-26086) echo "Jira 漏洞探测（CVE-2021-26086）" ;;
+    crowdsecurity/netgear_rce) echo "Netgear 远程代码执行探测" ;;
+    *) echo "${s}" ;;
+  esac
+}
+
 info "Webhook 任务开始执行。"
 
 interval_min="${WEBHOOK_PUSH_INTERVAL_MINUTES:-1440}"
@@ -1192,13 +1219,17 @@ alert_new_count=0
 decision_new_count=0
 
 # 仅推送未发送过的最新 20 条告警
-while IFS='|' read -r kind aid ip reason start_at country; do
+while IFS='|' read -r kind aid ip reason start_at country city; do
   sig="${kind}|${aid}|${ip}|${reason}|${start_at}"
   if ! is_sent "${sig}"; then
     if [ "${WEBHOOK_TYPE:-}" = "dingtalk" ]; then
       alert_new_count=$((alert_new_count + 1))
       echo "${sig}" >> "${pending_alert_sigs}"
-      echo "- ${ip} | ${reason} | ${start_at}" >> "${pending_alert_lines}"
+      reason_cn="$(translate_scenario "${reason}")"
+      cst_time="$(to_cst "${start_at}")"
+      [ -z "${country}" ] && country="unknown"
+      [ -z "${city}" ] && city="unknown"
+      echo "- ${ip} | ${country}/${city} | ${reason_cn} | ${cst_time}" >> "${pending_alert_lines}"
       log "[聚合] 告警待发送：${sig}"
     else
       msg="CrowdSec 告警
@@ -1221,7 +1252,7 @@ IP: ${ip}
 done < <(
   echo "${ALERTS}" | jq -r '
     .[]? |
-    "alert|\(.id // "na")|\(.source.ip // "unknown")|\(.scenario // "unknown")|\(.start_at // "na")|\(.country // "unknown")"
+    "alert|\(.id // "na")|\(.source.ip // "unknown")|\(.scenario // "unknown")|\(.start_at // "na")|\(.country // "unknown")|\(.city // "unknown")"
   ' | tail -n 20
 )
 
@@ -1232,7 +1263,9 @@ while IFS='|' read -r kind did value scenario created_at dtype; do
     if [ "${WEBHOOK_TYPE:-}" = "dingtalk" ]; then
       decision_new_count=$((decision_new_count + 1))
       echo "${sig}" >> "${pending_decision_sigs}"
-      echo "- ${value} | ${scenario} | ${created_at}" >> "${pending_decision_lines}"
+      scenario_cn="$(translate_scenario "${scenario}")"
+      cst_time="$(to_cst "${created_at}")"
+      echo "- ${value} | ${scenario_cn} | ${cst_time}" >> "${pending_decision_lines}"
       log "[聚合] 决策待发送：${sig}"
     else
       msg="CrowdSec 决策
@@ -1255,7 +1288,7 @@ while IFS='|' read -r kind did value scenario created_at dtype; do
 done < <(
   echo "${DECISIONS}" | jq -r '
     .[]? |
-    "decision|\(.id // "na")|\(.value // "unknown")|\(.scenario // "manual")|\(.created_at // "na")|\(.type // "unknown")"
+    "decision|\(.id // "na")|\(.value // .scope.value // .source.ip // "unknown")|\(.scenario // "manual")|\(.created_at // "na")|\(.type // "unknown")"
   ' | tail -n 20
 )
 
@@ -1263,8 +1296,9 @@ done < <(
 if [ "${WEBHOOK_TYPE:-}" = "dingtalk" ]; then
   if [ "${alert_new_count}" -gt 0 ]; then
     alert_preview="$(head -n 10 "${pending_alert_lines}" 2>/dev/null || true)"
+    cst_now="$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')"
     alert_msg="服务器安全通报(CrowdSec)
-时间: $(ts)
+时间(东八区): ${cst_now}
 本轮新增: ${alert_new_count} 条
 前10条告警(服务器查看更多):
 ${alert_preview}"
@@ -1281,10 +1315,11 @@ ${alert_preview}"
 
   if [ "${decision_new_count}" -gt 0 ]; then
     decision_preview="$(head -n 10 "${pending_decision_lines}" 2>/dev/null || true)"
+    cst_now="$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')"
     decision_msg="CrowdSec 决策摘要
-时间: $(ts)
+时间(东八区): ${cst_now}
 本轮新增: ${decision_new_count} 条
-前10条告警(服务器查看更多):
+前10条决策(服务器查看更多):
 ${decision_preview}"
     if send_msg "${decision_msg}"; then
       while IFS= read -r sig; do
